@@ -1,0 +1,35 @@
+{
+  "url": "http://127.0.0.1:3001/",
+  "width": 1080,
+  "height": 1920,
+  "viewportWidth": 1200,
+  "viewportHeight": 900,
+  "captureReference": true,
+  "probeRetries": 2,
+  "cases": [
+    {
+      "id": "dl2_UISimplePropList-root",
+      "title": "Simple prop list root size",
+      "prefab": "UICommons/dl2_UISimplePropList.prefab",
+      "name": "dl2_UISimplePropList",
+      "editorCrop": "expected"
+    },
+    {
+      "id": "dl2_UISimplePropList-propScrollView",
+      "title": "Simple prop list ScrollView background",
+      "prefab": "UICommons/dl2_UISimplePropList.prefab",
+      "name": "propScrollView",
+      "editorCrop": "expected"
+    },
+    {
+      "id": "UIArmsTaskItem-root-position",
+      "title": "Arms task item root position",
+      "prefab": "UIActivityArmsRanking/UIArmsTaskItem.prefab",
+      "name": "UIArmsTaskItem",
+      "editorCrop": "expected",
+      "pad": 0,
+      "diffWarnRatio": 0.3,
+      "aspectWarnThreshold": 1
+    }
+  ]
+}

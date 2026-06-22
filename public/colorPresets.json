@@ -1,0 +1,72 @@
+[
+  {
+    "color": "#000000",
+    "label": "黑色",
+    "desc": "深色背景反色"
+  },
+  {
+    "color": "#cdd6f4",
+    "label": "浅灰",
+    "desc": "常规正文"
+  },
+  {
+    "color": "#6c7086",
+    "label": "深灰",
+    "desc": "次要/禁用文字"
+  },
+  {
+    "color": "#f38ba8",
+    "label": "红色",
+    "desc": "错误/警告提示"
+  },
+  {
+    "color": "#fab387",
+    "label": "橙色",
+    "desc": "强调/高亮"
+  },
+  {
+    "color": "#f9e2af",
+    "label": "黄色",
+    "desc": "金币/奖励数值"
+  },
+  {
+    "color": "#a6e3a1",
+    "label": "绿色",
+    "desc": "成功/正向状态"
+  },
+  {
+    "color": "#89b4fa",
+    "label": "蓝色",
+    "desc": "链接/可交互"
+  },
+  {
+    "color": "#cba6f7",
+    "label": "紫色",
+    "desc": "稀有/特殊品质"
+  },
+  {
+    "color": "#f5c2e7",
+    "label": "粉色",
+    "desc": "活动/节日"
+  },
+  {
+    "color": "#94e2d5",
+    "label": "青色",
+    "desc": "信息/提示"
+  },
+  {
+    "color": "#0b3e5c",
+    "label": "蓝",
+    "desc": "小标题"
+  },
+  {
+    "color": "#156c8c",
+    "label": "蓝",
+    "desc": "强度内容"
+  },
+  {
+    "color": "#feeb42",
+    "label": "新颜色",
+    "desc": ""
+  }
+]
