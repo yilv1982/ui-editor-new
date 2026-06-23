@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { useEditorStore } from '../../stores/editorStore';
 import { getAdaptedAbsolutePosition } from '../../utils/anchorAdapt';
+import { setTextContentOnBridge } from '../../services/BridgeArtboardStore';
 
 interface ColorPreset { color: string; label: string; desc: string }
 
@@ -13,13 +14,14 @@ export default function TextInlineEditor({ nodeId }: { nodeId: string }) {
   const previewHeight = useEditorStore((s) => s.previewHeight);
   const nodes = useEditorStore((s) => s.nodes);
   const setEditingTextId = useEditorStore((s) => s.setEditingTextId);
-  const updateNode = useEditorStore((s) => s.updateNode);
-  const pushHistory = useEditorStore((s) => s.pushHistory);
 
   const taRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const historyPushed = useRef(false);
+  const commitTimerRef = useRef<number | null>(null);
+  const lastCommittedRef = useRef({ text: node?.text ?? '', richText: !!node?.richText });
   const [colorPresets, setColorPresets] = useState<ColorPreset[]>([]);
+  const [draftText, setDraftText] = useState(node?.text ?? '');
+  const [draftRichText, setDraftRichText] = useState(!!node?.richText);
 
   // 当前 active 画板的 (x, y) 偏移（用于把节点本地坐标转为屏幕坐标）
   const activePageId = useEditorStore((s) => s.activePageId);
@@ -37,20 +39,71 @@ export default function TextInlineEditor({ nodeId }: { nodeId: string }) {
     setTimeout(() => taRef.current?.focus(), 50);
   }, []);
 
+  useEffect(() => {
+    const next = { text: node?.text ?? '', richText: !!node?.richText };
+    lastCommittedRef.current = next;
+    setDraftText(next.text);
+    setDraftRichText(next.richText);
+    if (commitTimerRef.current) {
+      window.clearTimeout(commitTimerRef.current);
+      commitTimerRef.current = null;
+    }
+  }, [nodeId]);
+
+  const commitText = useCallback((text: string, richText: boolean) => {
+    const last = lastCommittedRef.current;
+    if (last.text === text && last.richText === richText) return;
+    lastCommittedRef.current = { text, richText };
+    void setTextContentOnBridge(nodeId, text, richText).catch((err) => {
+      console.warn('Failed to sync inline text to Bridge:', err);
+      const current = useEditorStore.getState().nodes[nodeId];
+      lastCommittedRef.current = { text: current?.text ?? '', richText: !!current?.richText };
+    });
+  }, [nodeId]);
+
+  const scheduleCommit = useCallback((text: string, richText: boolean, delay = 250) => {
+    if (commitTimerRef.current) window.clearTimeout(commitTimerRef.current);
+    commitTimerRef.current = window.setTimeout(() => {
+      commitTimerRef.current = null;
+      commitText(text, richText);
+    }, delay);
+  }, [commitText]);
+
+  const flushPendingText = useCallback(() => {
+    if (commitTimerRef.current) {
+      window.clearTimeout(commitTimerRef.current);
+      commitTimerRef.current = null;
+    }
+    commitText(draftText, draftRichText);
+  }, [commitText, draftRichText, draftText]);
+
+  useEffect(() => {
+    return () => {
+      if (commitTimerRef.current) {
+        window.clearTimeout(commitTimerRef.current);
+        commitTimerRef.current = null;
+      }
+    };
+  }, []);
+
   // 点击外部关闭
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        flushPendingText();
         setEditingTextId(null);
       }
     };
     document.addEventListener('mousedown', handler, true);
     return () => document.removeEventListener('mousedown', handler, true);
-  }, [setEditingTextId]);
+  }, [flushPendingText, setEditingTextId]);
 
-  const close = useCallback(() => setEditingTextId(null), [setEditingTextId]);
+  const close = useCallback(() => {
+    flushPendingText();
+    setEditingTextId(null);
+  }, [flushPendingText, setEditingTextId]);
 
-  if (!node) { close(); return null; }
+  if (!node) return null;
 
   const adapted = getAdaptedAbsolutePosition(nodeId, nodes, previewWidth, previewHeight);
   const screenX = canvasX + (offX + adapted.x) * canvasScale;
@@ -59,11 +112,9 @@ export default function TextInlineEditor({ nodeId }: { nodeId: string }) {
   const screenH = adapted.height * canvasScale;
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    if (!historyPushed.current) {
-      pushHistory();
-      historyPushed.current = true;
-    }
-    updateNode(nodeId, { text: e.target.value });
+    const nextText = e.target.value;
+    setDraftText(nextText);
+    scheduleCommit(nextText, draftRichText);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -75,12 +126,13 @@ export default function TextInlineEditor({ nodeId }: { nodeId: string }) {
     if (!ta) return;
     const s = ta.selectionStart, end = ta.selectionEnd;
     if (s === end) return;
-    const txt = node.text || '';
+    const txt = draftText;
     const selected = txt.slice(s, end);
     const wrapped = `<color=${color}>${selected}</color>`;
     const newText = txt.slice(0, s) + wrapped + txt.slice(end);
-    if (!historyPushed.current) { pushHistory(); historyPushed.current = true; }
-    updateNode(nodeId, { text: newText, richText: true });
+    setDraftText(newText);
+    setDraftRichText(true);
+    scheduleCommit(newText, true, 0);
     setTimeout(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = s + wrapped.length; }, 0);
   };
 
@@ -89,11 +141,12 @@ export default function TextInlineEditor({ nodeId }: { nodeId: string }) {
     if (!ta) return;
     const s = ta.selectionStart, end = ta.selectionEnd;
     if (s === end) return;
-    const txt = node.text || '';
+    const txt = draftText;
     const wrapped = `<${tag}>${txt.slice(s, end)}</${tag}>`;
     const newText = txt.slice(0, s) + wrapped + txt.slice(end);
-    if (!historyPushed.current) { pushHistory(); historyPushed.current = true; }
-    updateNode(nodeId, { text: newText, richText: true });
+    setDraftText(newText);
+    setDraftRichText(true);
+    scheduleCommit(newText, true, 0);
     setTimeout(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = s + wrapped.length; }, 0);
   };
 
@@ -101,12 +154,14 @@ export default function TextInlineEditor({ nodeId }: { nodeId: string }) {
     const ta = taRef.current;
     if (!ta) return;
     const s = ta.selectionStart, end = ta.selectionEnd;
-    const txt = node.text || '';
+    const txt = draftText;
     const region = s === end ? txt : txt.slice(s, end);
     const cleaned = region.replace(/<\/?(?:color=[^>]*|color|b|i)>/g, '');
     const newText = s === end ? cleaned : txt.slice(0, s) + cleaned + txt.slice(end);
-    if (!historyPushed.current) { pushHistory(); historyPushed.current = true; }
-    updateNode(nodeId, { text: newText, richText: newText.includes('<') });
+    const nextRichText = newText.includes('<');
+    setDraftText(newText);
+    setDraftRichText(nextRichText);
+    scheduleCommit(newText, nextRichText, 0);
     setTimeout(() => { ta.focus(); ta.selectionStart = s; ta.selectionEnd = s + cleaned.length; }, 0);
   };
 
@@ -137,7 +192,7 @@ export default function TextInlineEditor({ nodeId }: { nodeId: string }) {
           onClick={clearTags}>清除</button>
       </div>
       {/* 文本编辑区 */}
-      <textarea ref={taRef} value={node.text || ''} onChange={handleChange} onKeyDown={handleKeyDown}
+      <textarea ref={taRef} value={draftText} onChange={handleChange} onKeyDown={handleKeyDown}
         className="block outline-none resize-none rounded-b"
         style={{
           width: minW, minHeight: minH,

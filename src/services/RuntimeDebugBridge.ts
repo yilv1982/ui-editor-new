@@ -4,8 +4,11 @@ import { exportPageForUnity } from '../utils/exportJson';
 import { fetchPrefabTemplate, importPrefabTemplateNode } from '../utils/importPrefabTemplate';
 import { fullSync } from './StoreSync';
 import unityBridge from './UnityBridge';
+import { createWidgetNodeOnBridge } from './BridgeArtboardStore';
 import type { NodeBounds } from './UnityBridge';
 import { DESIGN_WIDTH, DESIGN_HEIGHT } from '../config/assetPaths';
+import { captureLayerWholeShot } from '../utils/ueExport/common';
+import type { BboxRecord } from './EditorBridgeClient';
 
 interface RuntimeCommand {
   id: number;
@@ -22,6 +25,7 @@ interface DebugNode {
   y: number;
   width: number;
   height: number;
+  rotation?: number;
   localScale?: { x: number; y: number; z?: number };
   originalLocalScale?: { x: number; y: number; z?: number };
   visible: boolean;
@@ -131,10 +135,16 @@ interface RuntimeDebugApi {
   importPrefab: (relPath: string, args?: Record<string, unknown>) => Promise<unknown>;
   clear: () => unknown;
   select: (idOrName: string) => unknown;
+  node: (idOrName: string) => unknown;
   setPreviewResolution: (width: number, height: number) => unknown;
   reload: () => unknown;
   hitTestDesign: (x: number, y: number) => unknown;
   dragSelectedByScreenDelta: (deltaX: number, deltaY: number, idOrName?: string) => Promise<unknown>;
+  createBridgeFrame: (args?: Record<string, unknown>) => Promise<unknown>;
+  addFlowLineAnnotation: (srcIdOrName: string, dstIdOrName: string) => unknown;
+  addOutsideRectAnnotation: (args?: Record<string, unknown>) => unknown;
+  captureLayerWholeShotSummary: () => Promise<unknown>;
+  bridgeBboxes: () => unknown;
   fullSync: () => unknown;
   unityMessages: () => unknown;
 }
@@ -183,6 +193,7 @@ function slimNode(node: UINode): DebugNode {
     y: node.y,
     width: node.width,
     height: node.height,
+    rotation: node.rotation,
     localScale: node.localScale,
     originalLocalScale: node.originalLocalScale,
     visible: node.visible,
@@ -1470,6 +1481,186 @@ function selectNode(idOrName: string) {
   return { selectedId: id, snapshot: getSnapshot() };
 }
 
+function getDebugNode(idOrName: string) {
+  const id = findNodeId(idOrName);
+  return { id, node: id ? slimNode(useEditorStore.getState().nodes[id]) : null };
+}
+
+function getBridgeBboxes() {
+  const artboard = getActiveArtboard();
+  return {
+    rootNodeId: artboard?.bridgeRootNodeId ?? null,
+    snapshot: artboard?.bridgeSnapshot ?? null,
+    bboxes: artboard?.bridgeSnapshot?.bboxes ?? [],
+    selectedIds: useEditorStore.getState().selectedIds,
+  };
+}
+
+function getActivePage(): PageData | null {
+  const state = useEditorStore.getState();
+  return state.pages.find((item) => item.id === state.activePageId) ?? null;
+}
+
+function getBridgeBoxForNode(artboard: PageData['artboards'][number], nodeId: string): BboxRecord | null {
+  const boxes = (artboard.bridgeSnapshot?.bboxes ?? []) as BboxRecord[];
+  const box = boxes.find((item) => item.nodeId === nodeId) ?? null;
+  if (!box || !box.activeInHierarchy || box.width <= 0 || box.height <= 0) return null;
+  return box;
+}
+
+function findNodeArtboardForDebug(nodeId: string): { artboard: PageData['artboards'][number]; box: BboxRecord } | null {
+  const state = useEditorStore.getState();
+  const activePage = getActivePage();
+  if (!activePage) return null;
+  for (const artboard of activePage.artboards) {
+    const nodes = artboard.id === state.activeArtboardId ? state.nodes : artboard.nodes;
+    if (!nodes[nodeId]) continue;
+    const box = getBridgeBoxForNode(artboard, nodeId);
+    if (box) return { artboard, box };
+  }
+  return null;
+}
+
+function bridgeCenterForDebug(nodeId: string) {
+  const located = findNodeArtboardForDebug(nodeId);
+  if (!located) throw new Error(`Cannot find Bridge bbox for node ${nodeId}`);
+  const { artboard, box } = located;
+  return {
+    artboardId: artboard.id,
+    nodeId,
+    local: {
+      x: box.x + box.width / 2,
+      y: box.y + box.height / 2,
+    },
+    page: {
+      x: artboard.x + box.x + box.width / 2,
+      y: artboard.y + box.y + box.height / 2,
+    },
+    bbox: box,
+  };
+}
+
+function addFlowLineAnnotation(srcIdOrName: string, dstIdOrName: string) {
+  const srcId = findNodeId(srcIdOrName);
+  const dstId = findNodeId(dstIdOrName);
+  if (!srcId) throw new Error(`Cannot find flow-line source node ${srcIdOrName}`);
+  if (!dstId) throw new Error(`Cannot find flow-line target node ${dstIdOrName}`);
+  const src = bridgeCenterForDebug(srcId);
+  const dst = bridgeCenterForDebug(dstId);
+  const id = useEditorStore.getState().addAnnotation('flow-line', src.page.x, src.page.y, {
+    refNodeId: srcId,
+    text: dstId,
+    color: '#f9e2af',
+    strokeWidth: 4,
+    arrowEnd: 'end',
+  });
+  useEditorStore.getState().setSelectedAnnotationIds([id]);
+  return {
+    id,
+    srcId,
+    dstId,
+    src,
+    dst,
+    annotation: useEditorStore.getState().annotations[id],
+  };
+}
+
+function addOutsideRectAnnotation(args: Record<string, unknown> = {}) {
+  const artboard = getActiveArtboard();
+  if (!artboard) throw new Error('No active artboard');
+  const page = getActivePage();
+  const pageRight = page?.artboards.length
+    ? Math.max(...page.artboards.map((item) => item.x + item.width))
+    : artboard.x + artboard.width;
+  const x = typeof args.x === 'number' ? args.x : pageRight + 110;
+  const y = typeof args.y === 'number' ? args.y : artboard.y + 72;
+  const width = typeof args.width === 'number' ? args.width : 130;
+  const height = typeof args.height === 'number' ? args.height : 78;
+  const id = useEditorStore.getState().addAnnotation('rect', x, y, {
+    width,
+    height,
+    color: typeof args.color === 'string' ? args.color : '#94e2d5',
+    strokeWidth: typeof args.strokeWidth === 'number' ? args.strokeWidth : 4,
+  });
+  useEditorStore.getState().setSelectedAnnotationIds([id]);
+  return {
+    id,
+    annotation: useEditorStore.getState().annotations[id],
+    artboard: {
+      id: artboard.id,
+      x: artboard.x,
+      y: artboard.y,
+      width: artboard.width,
+      height: artboard.height,
+    },
+  };
+}
+
+function canvasDiffSummary(before: HTMLCanvasElement, after: HTMLCanvasElement) {
+  const width = Math.min(before.width, after.width);
+  const height = Math.min(before.height, after.height);
+  const beforeCtx = before.getContext('2d');
+  const afterCtx = after.getContext('2d');
+  if (!beforeCtx || !afterCtx || width <= 0 || height <= 0) return null;
+  const a = beforeCtx.getImageData(0, 0, width, height).data;
+  const b = afterCtx.getImageData(0, 0, width, height).data;
+  let changed = 0;
+  let flowColorish = 0;
+  let maxDiff = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    const dr = Math.abs(a[i] - b[i]);
+    const dg = Math.abs(a[i + 1] - b[i + 1]);
+    const db = Math.abs(a[i + 2] - b[i + 2]);
+    const da = Math.abs(a[i + 3] - b[i + 3]);
+    const diff = dr + dg + db + da;
+    if (diff > 24) changed += 1;
+    if (diff > maxDiff) maxDiff = diff;
+    if (
+      Math.abs(b[i] - 249) < 36 &&
+      Math.abs(b[i + 1] - 226) < 36 &&
+      Math.abs(b[i + 2] - 175) < 42 &&
+      b[i + 3] > 160
+    ) {
+      flowColorish += 1;
+    }
+  }
+  return {
+    width,
+    height,
+    changedPixels: changed,
+    changedRatio: Math.round((changed / Math.max(1, width * height)) * 1_000_000) / 1_000_000,
+    flowColorishPixels: flowColorish,
+    maxDiff,
+  };
+}
+
+async function captureLayerWholeShotSummary() {
+  const page = getActivePage();
+  if (!page) throw new Error('No active page');
+  const withoutAnnotations = await captureLayerWholeShot(page, false);
+  const withAnnotations = await captureLayerWholeShot(page, true);
+  if (!withoutAnnotations || !withAnnotations) throw new Error('captureLayerWholeShot returned null');
+  return {
+    pageId: page.id,
+    artboardCount: page.artboards.length,
+    withoutAnnotations: {
+      width: withoutAnnotations.canvas.width,
+      height: withoutAnnotations.canvas.height,
+      bboxW: withoutAnnotations.bboxW,
+      bboxH: withoutAnnotations.bboxH,
+      designToPixelRatio: withoutAnnotations.designToPixelRatio,
+    },
+    withAnnotations: {
+      width: withAnnotations.canvas.width,
+      height: withAnnotations.canvas.height,
+      bboxW: withAnnotations.bboxW,
+      bboxH: withAnnotations.bboxH,
+      designToPixelRatio: withAnnotations.designToPixelRatio,
+    },
+    diff: canvasDiffSummary(withoutAnnotations.canvas, withAnnotations.canvas),
+  };
+}
+
 function waitMs(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -1492,7 +1683,8 @@ function makePointerEvent(type: string, init: PointerEventInit): PointerEvent {
 }
 
 function findMoveDragHandle(): Element | null {
-  return document.querySelector('[data-overlay-root] [data-drag-handle][cursor="move"]')
+  return document.querySelector('[data-testid="transform-handle-move"]')
+    ?? document.querySelector('[data-overlay-root] [data-drag-handle="move"]')
     ?? document.querySelector('[data-overlay-root] [data-drag-handle]');
 }
 
@@ -1566,6 +1758,27 @@ async function dragSelectedByScreenDelta(deltaX: number, deltaY: number, idOrNam
     afterNode,
     snapshot,
     unityMessages: unityBridge.getDebugMessages().slice(-10),
+  };
+}
+
+async function createBridgeFrame(args: Record<string, unknown> = {}) {
+  const name = typeof args.name === 'string' ? args.name : `DebugFrame_${Date.now()}`;
+  await createWidgetNodeOnBridge({
+    widgetType: 'frame',
+    name,
+    x: typeof args.x === 'number' ? args.x : 0,
+    y: typeof args.y === 'number' ? args.y : 0,
+    width: typeof args.width === 'number' ? args.width : 180,
+    height: typeof args.height === 'number' ? args.height : 120,
+    parentId: typeof args.parentId === 'string' ? args.parentId : undefined,
+  });
+  await waitFrames(2);
+  const selected = selectNode(name);
+  return {
+    name,
+    selectedId: selected.selectedId,
+    node: selected.selectedId ? slimNode(useEditorStore.getState().nodes[selected.selectedId]) : null,
+    snapshot: getSnapshot(),
   };
 }
 
@@ -1760,6 +1973,7 @@ if (enabled) {
     importPrefab,
     clear: clearRuntime,
     select: selectNode,
+    node: getDebugNode,
     setPreviewResolution: (width: number, height: number) => {
       useEditorStore.getState().setPreviewResolution(width, height);
       return getSnapshot();
@@ -1773,6 +1987,11 @@ if (enabled) {
       return { id, node: id ? slimNode(useEditorStore.getState().nodes[id]) : null };
     },
     dragSelectedByScreenDelta,
+    createBridgeFrame,
+    addFlowLineAnnotation,
+    addOutsideRectAnnotation,
+    captureLayerWholeShotSummary,
+    bridgeBboxes: getBridgeBboxes,
     fullSync: () => {
       fullSync();
       return analyzeRuntime();

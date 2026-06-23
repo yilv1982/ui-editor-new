@@ -8,7 +8,8 @@ import NumberBadgeGlyph from './annotations/NumberBadgeGlyph';
 import RectHighlightGlyph from './annotations/RectHighlightGlyph';
 import DimensionGlyph from './annotations/DimensionGlyph';
 import FlowLineGlyph from './annotations/FlowLineGlyph';
-import type { AnnotationNode, AnnotationType } from '../../types';
+import type { AnnotationNode, AnnotationType, Artboard, UINode } from '../../types';
+import type { BboxRecord } from '../../services/EditorBridgeClient';
 import type { GlyphProps } from './annotations/types';
 
 export interface PreviewDraft {
@@ -62,7 +63,7 @@ export default function AnnotationOverlay({ offsetX, offsetY, scale, effectiveW,
   if (!visible) return null;
 
   /** 在当前 page 的所有画板里找节点,返回 {artboard, nodes} 用于解析坐标 */
-  function findNodeArtboard(nodeId: string): { artboard: { x: number; y: number; width: number; height: number; id: string }; nodes: typeof nodes } | null {
+  function findNodeArtboard(nodeId: string): { artboard: Artboard; nodes: Record<string, UINode> } | null {
     if (!activePage) return null;
     for (const ab of activePage.artboards) {
       // active 画板用顶层 nodes 镜像(最新);其他用 ab.nodes
@@ -70,6 +71,32 @@ export default function AnnotationOverlay({ offsetX, offsetY, scale, effectiveW,
       if (useNodes[nodeId]) return { artboard: ab, nodes: useNodes };
     }
     return null;
+  }
+
+  function getBridgeNodeBox(artboard: Artboard, nodeId: string) {
+    const boxes = (artboard.bridgeSnapshot?.bboxes ?? []) as BboxRecord[];
+    const box = boxes.find((item) => item.nodeId === nodeId);
+    if (!box || !box.activeInHierarchy || box.width <= 0 || box.height <= 0) return null;
+    return { x: box.x, y: box.y, width: box.width, height: box.height };
+  }
+
+  function getNodeBox(loc: { artboard: Artboard; nodes: Record<string, UINode> }, nodeId: string) {
+    return getBridgeNodeBox(loc.artboard, nodeId)
+      ?? getAdaptedAbsolutePosition(
+        nodeId,
+        loc.nodes,
+        loc.artboard.width || effectiveW,
+        loc.artboard.height || effectiveH,
+      );
+  }
+
+  function getGlobalCenter(loc: { artboard: Artboard; nodes: Record<string, UINode> }, nodeId: string) {
+    const box = getNodeBox(loc, nodeId);
+    return {
+      x: loc.artboard.x + box.x + box.width / 2,
+      y: loc.artboard.y + box.y + box.height / 2,
+      box,
+    };
   }
 
   // 解析流程线端点(根据 refNodeId / refPageId)。
@@ -81,9 +108,9 @@ export default function AnnotationOverlay({ offsetX, offsetY, scale, effectiveW,
     if (!a.refNodeId) return null;
     const srcLoc = findNodeArtboard(a.refNodeId);
     if (!srcLoc) return null;
-    const sb = getAdaptedAbsolutePosition(a.refNodeId, srcLoc.nodes, effectiveW, effectiveH);
-    const sxMid = srcLoc.artboard.x + sb.x + sb.width / 2;
-    const syMid = srcLoc.artboard.y + sb.y + sb.height / 2;
+    const src = getGlobalCenter(srcLoc, a.refNodeId);
+    const sxMid = src.x;
+    const syMid = src.y;
     if (a.refPageId) {
       // 跨页: 在源节点右侧显示一个短箭头 + "→其它页" 标签
       return {
@@ -101,16 +128,16 @@ export default function AnnotationOverlay({ offsetX, offsetY, scale, effectiveW,
     if (!dstId) return null;
     const dstLoc = findNodeArtboard(dstId);
     if (!dstLoc) return null;
-    const db = getAdaptedAbsolutePosition(dstId, dstLoc.nodes, effectiveW, effectiveH);
-    const dxMid = dstLoc.artboard.x + db.x + db.width / 2;
-    const dyMid = dstLoc.artboard.y + db.y + db.height / 2;
+    const dst = getGlobalCenter(dstLoc, dstId);
+    const dxMid = dst.x;
+    const dyMid = dst.y;
 
     // 计算绕画板外侧的正交折线路径
     const MARGIN = 20; // 拐点离画板边的距离
     const srcAb = srcLoc.artboard;
     const dstAb = dstLoc.artboard;
     // 从源节点向右伸出至源画板外侧
-    const exitX = Math.max(srcAb.x + effectiveW, dstAb.x + effectiveW) + MARGIN;
+    const exitX = Math.max(srcAb.x + srcAb.width, dstAb.x + dstAb.width) + MARGIN;
     // 终点入口段:从目标节点向右出至同一外侧列
     const points: { x: number; y: number }[] = [
       { x: 0, y: 0 },                              // 源节点中心(相对自身,即 0,0)
@@ -271,17 +298,17 @@ export default function AnnotationOverlay({ offsetX, offsetY, scale, effectiveW,
 
         // 流程线起点已选 - 起点节点中心 → 鼠标
         if (dr.type === 'flow-line' && dr.flowLineSrcId) {
-          const src = nodes[dr.flowLineSrcId];
-          if (!src) return null;
-          const sb = getAdaptedAbsolutePosition(dr.flowLineSrcId, nodes, effectiveW, effectiveH);
-          const sxMid = offsetX + (sb.x + sb.width / 2) * scale;
-          const syMid = offsetY + (sb.y + sb.height / 2) * scale;
-          const hover = dr.flowLineHoverDstId ? nodes[dr.flowLineHoverDstId] : null;
+          const srcLoc = findNodeArtboard(dr.flowLineSrcId);
+          if (!srcLoc) return null;
+          const src = getGlobalCenter(srcLoc, dr.flowLineSrcId);
+          const sxMid = offsetX + src.x * scale;
+          const syMid = offsetY + src.y * scale;
+          const hoverLoc = dr.flowLineHoverDstId ? findNodeArtboard(dr.flowLineHoverDstId) : null;
           let hoverRect = null;
-          if (hover && dr.flowLineHoverDstId) {
-            const hb = getAdaptedAbsolutePosition(dr.flowLineHoverDstId, nodes, effectiveW, effectiveH);
+          if (hoverLoc && dr.flowLineHoverDstId) {
+            const hb = getNodeBox(hoverLoc, dr.flowLineHoverDstId);
             hoverRect = (
-              <rect x={offsetX + hb.x * scale} y={offsetY + hb.y * scale}
+              <rect x={offsetX + (hoverLoc.artboard.x + hb.x) * scale} y={offsetY + (hoverLoc.artboard.y + hb.y) * scale}
                 width={hb.width * scale} height={hb.height * scale}
                 fill="none" stroke="#89b4fa" strokeWidth={2}
                 strokeDasharray="3 2" pointerEvents="none" />

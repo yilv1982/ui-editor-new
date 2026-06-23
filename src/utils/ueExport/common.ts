@@ -2,9 +2,94 @@
 // 导出公共管线: 切到目标页和目标画板 → 等 Unity 渲染 → 截画板区域 → 在 canvas 上手绘批注。
 import type { AnnotationNode, Artboard, PageData } from '../../types';
 import { useEditorStore } from '../../stores/editorStore';
-import { cropCanvasToDesignArea } from '../../components/Canvas/UnityCanvas';
 import { getAdaptedAbsolutePosition } from '../anchorAdapt';
 import { DESIGN_WIDTH, DESIGN_HEIGHT } from '../../config/assetPaths';
+import editorBridgeClient from '../../services/EditorBridgeClient';
+import type { BboxRecord } from '../../services/EditorBridgeClient';
+
+type NodeBox = { x: number; y: number; width: number; height: number };
+
+function getBridgeNodeBox(artboard: Artboard, nodeId: string): NodeBox | null {
+  const boxes = (artboard.bridgeSnapshot?.bboxes ?? []) as BboxRecord[];
+  const box = boxes.find((item) => item.nodeId === nodeId);
+  if (!box || !box.activeInHierarchy || box.width <= 0 || box.height <= 0) return null;
+  return {
+    x: box.x,
+    y: box.y,
+    width: box.width,
+    height: box.height,
+  };
+}
+
+function getNodeBox(
+  artboard: Artboard,
+  nodeId: string,
+  previewW = artboard.width || DESIGN_WIDTH,
+  previewH = artboard.height || DESIGN_HEIGHT,
+): NodeBox {
+  return getBridgeNodeBox(artboard, nodeId)
+    ?? getAdaptedAbsolutePosition(nodeId, artboard.nodes, previewW, previewH);
+}
+
+function getNodeCenter(
+  artboard: Artboard,
+  nodeId: string,
+  previewW = artboard.width || DESIGN_WIDTH,
+  previewH = artboard.height || DESIGN_HEIGHT,
+): { x: number; y: number; box: NodeBox } {
+  const box = getNodeBox(artboard, nodeId, previewW, previewH);
+  return {
+    x: box.x + box.width / 2,
+    y: box.y + box.height / 2,
+    box,
+  };
+}
+
+function getNodeGlobalCenter(
+  artboard: Artboard,
+  nodeId: string,
+): { x: number; y: number; box: NodeBox } {
+  const center = getNodeCenter(artboard, nodeId, artboard.width || DESIGN_WIDTH, artboard.height || DESIGN_HEIGHT);
+  return {
+    x: artboard.x + center.x,
+    y: artboard.y + center.y,
+    box: center.box,
+  };
+}
+
+async function imageUrlToCanvas(url: string): Promise<HTMLCanvasElement | null> {
+  try {
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      bitmap.close();
+      return null;
+    }
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    return canvas;
+  } catch {
+    return null;
+  }
+}
+
+async function bridgeSnapshotCanvas(artboard: Artboard): Promise<HTMLCanvasElement | null> {
+  if (artboard.bridgeSessionId) {
+    const rendered = await editorBridgeClient.renderSnapshot(artboard.bridgeSessionId);
+    const url = await editorBridgeClient.snapshotUrl(rendered.snapshot);
+    return imageUrlToCanvas(url);
+  }
+  if (artboard.bridgeSnapshotUrl) {
+    return imageUrlToCanvas(artboard.bridgeSnapshotUrl);
+  }
+  return null;
+}
 
 /**
  * 截画板"干净版":只截 1920×1080 设计区,只画本画板内的批注。
@@ -12,22 +97,11 @@ import { DESIGN_WIDTH, DESIGN_HEIGHT } from '../../config/assetPaths';
  * 返回的 canvas 始终是 cropped 设计区大小,不会因批注外溢而扩展。
  */
 export async function captureArtboardClean(
-  page: PageData,
+  _page: PageData,
   artboard: Artboard,
   includeAnnotations: boolean,
 ): Promise<HTMLCanvasElement | null> {
-  const state = useEditorStore.getState();
-  if (state.activePageId !== page.id) state.switchPage(page.id);
-  if (useEditorStore.getState().activeArtboardId !== artboard.id) {
-    useEditorStore.getState().setActiveArtboard(artboard.id);
-  }
-  fitCanvasToArtboard(artboard);
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  await new Promise((r) => setTimeout(r, 400));
-
-  const c = document.getElementById('unity-canvas') as HTMLCanvasElement | null;
-  if (!c) return null;
-  const cropped = cropCanvasToDesignArea(c);
+  const cropped = await bridgeSnapshotCanvas(artboard);
   if (!cropped) return null;
 
   if (!includeAnnotations) return cropped;
@@ -43,20 +117,16 @@ export async function captureArtboardClean(
     if (a.type === 'flow-line') {
       // 跨画板流程线交给上层处理;这里只画"源和目标都在本画板"的同画板流程线。
       if (!a.refNodeId || !artNodes[a.refNodeId]) continue;
-      const sb = getAdaptedAbsolutePosition(a.refNodeId, artNodes, DESIGN_WIDTH, DESIGN_HEIGHT);
-      const sxMid = sb.x + sb.width / 2;
-      const syMid = sb.y + sb.height / 2;
+      const src = getNodeCenter(artboard, a.refNodeId);
       const dstId = a.text;
       if (a.refPageId || !dstId || !artNodes[dstId]) continue;
-      const db = getAdaptedAbsolutePosition(dstId, artNodes, DESIGN_WIDTH, DESIGN_HEIGHT);
-      const dxMid = db.x + db.width / 2;
-      const dyMid = db.y + db.height / 2;
+      const dst = getNodeCenter(artboard, dstId);
       // 全局 → 本画板局部(本画板节点坐标已是局部,起止点同样是局部)
       annsLocal.push({
         ...a,
-        x: sxMid, y: syMid,
-        width: dxMid - sxMid, height: dyMid - syMid,
-        points: [{ x: 0, y: 0 }, { x: dxMid - sxMid, y: dyMid - syMid }],
+        x: src.x, y: src.y,
+        width: dst.x - src.x, height: dst.y - src.y,
+        points: [{ x: 0, y: 0 }, { x: dst.x - src.x, y: dst.y - src.y }],
       });
       continue;
     }
@@ -79,9 +149,9 @@ export async function captureArtboardClean(
  * 与 fitCanvasToArtboard 等价,但用于多画板的全局包围盒。
  */
 export function fitCanvasToBBox(bboxX: number, bboxY: number, bboxW: number, bboxH: number) {
-  const c = document.getElementById('unity-canvas') as HTMLCanvasElement | null;
-  if (!c) return;
-  const rect = c.getBoundingClientRect();
+  const container = document.querySelector('[data-canvas-container]') as HTMLElement | null;
+  if (!container) return;
+  const rect = container.getBoundingClientRect();
   if (rect.width === 0 || rect.height === 0) return;
   const st = useEditorStore.getState();
   // 画板世界坐标已经是当前预览分辨率坐标，fit 时只使用 canvasScale。
@@ -158,11 +228,61 @@ export async function captureLayerWholeShot(
     if (ratio > supersample) supersample = ratio;
   }
 
-  // Step 3: 全局包围盒(画布世界坐标,设计像素)
-  const minX = Math.min(...page.artboards.map((a) => a.x)) - BBOX_PADDING_DESIGN;
-  const minY = Math.min(...page.artboards.map((a) => a.y)) - BBOX_PADDING_DESIGN;
-  const maxX = Math.max(...page.artboards.map((a) => a.x + a.width)) + BBOX_PADDING_DESIGN;
-  const maxY = Math.max(...page.artboards.map((a) => a.y + a.height)) + BBOX_PADDING_DESIGN;
+  const nodeToArtboard = new Map<string, Artboard>();
+  for (const ab of page.artboards) {
+    for (const nid of Object.keys(ab.nodes)) nodeToArtboard.set(nid, ab);
+  }
+
+  // Step 3: 全局包围盒(画布世界坐标,设计像素)。包含画板本体、画板外批注和跨画板流程线。
+  let contentMinX = Math.min(...page.artboards.map((a) => a.x));
+  let contentMinY = Math.min(...page.artboards.map((a) => a.y));
+  let contentMaxX = Math.max(...page.artboards.map((a) => a.x + a.width));
+  let contentMaxY = Math.max(...page.artboards.map((a) => a.y + a.height));
+  const includePoint = (x: number, y: number) => {
+    contentMinX = Math.min(contentMinX, x);
+    contentMinY = Math.min(contentMinY, y);
+    contentMaxX = Math.max(contentMaxX, x);
+    contentMaxY = Math.max(contentMaxY, y);
+  };
+  if (includeAnnotations) {
+    const allAnns = Object.values(useEditorStore.getState().annotations);
+    for (const a of allAnns) {
+      if (a.type === 'flow-line') {
+        if (!a.refNodeId) continue;
+        const srcAb = nodeToArtboard.get(a.refNodeId);
+        if (!srcAb) continue;
+        const src = getNodeGlobalCenter(srcAb, a.refNodeId);
+        includePoint(src.x, src.y);
+        if (a.refPageId || !a.text) {
+          includePoint(src.x + 60, src.y);
+          continue;
+        }
+        const dstAb = nodeToArtboard.get(a.text);
+        if (!dstAb || dstAb.id === srcAb.id) continue;
+        const dst = getNodeGlobalCenter(dstAb, a.text);
+        const exitX = Math.max(srcAb.x + srcAb.width, dstAb.x + dstAb.width) + 20;
+        includePoint(exitX, src.y);
+        includePoint(exitX, dst.y);
+        includePoint(dst.x, dst.y);
+        continue;
+      }
+      const cx = a.x + a.width / 2;
+      const cy = a.y + a.height / 2;
+      const insideAny = page.artboards.some(
+        (ab) => cx >= ab.x && cx < ab.x + ab.width && cy >= ab.y && cy < ab.y + ab.height,
+      );
+      if (insideAny) continue;
+      includePoint(a.x, a.y);
+      includePoint(a.x + a.width, a.y + a.height);
+      if (a.points) {
+        for (const point of a.points) includePoint(a.x + point.x, a.y + point.y);
+      }
+    }
+  }
+  const minX = contentMinX - BBOX_PADDING_DESIGN;
+  const minY = contentMinY - BBOX_PADDING_DESIGN;
+  const maxX = contentMaxX + BBOX_PADDING_DESIGN;
+  const maxY = contentMaxY + BBOX_PADDING_DESIGN;
   const bboxW = Math.max(1, maxX - minX);
   const bboxH = Math.max(1, maxY - minY);
 
@@ -192,19 +312,15 @@ export async function captureLayerWholeShot(
   if (includeAnnotations) {
     const allAnns = Object.values(useEditorStore.getState().annotations);
     const drawn: AnnotationNode[] = [];
-    const nodeToArtboard = new Map<string, Artboard>();
-    for (const ab of page.artboards) {
-      for (const nid of Object.keys(ab.nodes)) nodeToArtboard.set(nid, ab);
-    }
 
     for (const a of allAnns) {
       if (a.type === 'flow-line') {
         if (!a.refNodeId) continue;
         const srcAb = nodeToArtboard.get(a.refNodeId);
         if (!srcAb) continue;
-        const sb = getAdaptedAbsolutePosition(a.refNodeId, srcAb.nodes, DESIGN_WIDTH, DESIGN_HEIGHT);
-        const sxGlobal = srcAb.x + sb.x + sb.width / 2;
-        const syGlobal = srcAb.y + sb.y + sb.height / 2;
+        const src = getNodeGlobalCenter(srcAb, a.refNodeId);
+        const sxGlobal = src.x;
+        const syGlobal = src.y;
 
         if (a.refPageId) {
           drawn.push({
@@ -221,9 +337,9 @@ export async function captureLayerWholeShot(
         const dstAb = nodeToArtboard.get(dstId);
         if (!dstAb) continue;
         if (dstAb.id === srcAb.id) continue; // 同画板已在 captureArtboardClean 里画过
-        const db = getAdaptedAbsolutePosition(dstId, dstAb.nodes, DESIGN_WIDTH, DESIGN_HEIGHT);
-        const dxGlobal = dstAb.x + db.x + db.width / 2;
-        const dyGlobal = dstAb.y + db.y + db.height / 2;
+        const dst = getNodeGlobalCenter(dstAb, dstId);
+        const dxGlobal = dst.x;
+        const dyGlobal = dst.y;
 
         // 与编辑器(AnnotationOverlay.resolveFlowLine)一致:绕画板右外侧的 4 段正交折线
         const MARGIN = 20;
@@ -294,45 +410,12 @@ export interface PageSnapshot {
   designArea: { x: number; y: number; w: number; h: number };
 }
 
-/** 把画布视野 fit 到目标画板（居中 + 完整可见），保证 cropCanvasToDesignArea 能截到完整图。 */
-function fitCanvasToArtboard(artboard: Artboard) {
-  const c = document.getElementById('unity-canvas') as HTMLCanvasElement | null;
-  if (!c) return;
-  const rect = c.getBoundingClientRect();
-  if (rect.width === 0 || rect.height === 0) return;
-  const st = useEditorStore.getState();
-  // canvasScale = min(rect/preview) * 0.95 留一点边
-  const canvasScale = Math.min(rect.width / st.previewWidth, rect.height / st.previewHeight) * 0.95;
-  // 截图区在 CSS 像素中的尺寸
-  const cssW = st.previewWidth * canvasScale;
-  const cssH = st.previewHeight * canvasScale;
-  // 让画板居中: canvasX + abX*canvasScale + cssW/2 = rect.w/2
-  const canvasX = rect.width / 2 - artboard.x * canvasScale - cssW / 2;
-  const canvasY = rect.height / 2 - artboard.y * canvasScale - cssH / 2;
-  st.setCanvasTransform(canvasX, canvasY, canvasScale);
-}
-
 export async function captureArtboardWithAnnotations(
   page: PageData,
   artboard: Artboard,
   includeAnnotations: boolean,
 ): Promise<PageSnapshot | null> {
-  const state = useEditorStore.getState();
-  if (state.activePageId !== page.id) {
-    state.switchPage(page.id);
-  }
-  if (useEditorStore.getState().activeArtboardId !== artboard.id) {
-    useEditorStore.getState().setActiveArtboard(artboard.id);
-  }
-  // 把画布视野 fit 到目标画板
-  fitCanvasToArtboard(artboard);
-  // 等 Unity 渲染稳定
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  await new Promise((r) => setTimeout(r, 400));
-
-  const c = document.getElementById('unity-canvas') as HTMLCanvasElement | null;
-  if (!c) return null;
-  const cropped = cropCanvasToDesignArea(c);
+  const cropped = await bridgeSnapshotCanvas(artboard);
   if (!cropped) return null;
 
   // 筛选批注：只保留坐标在当前画板范围内的（避免每个画板都画全部批注）
@@ -343,11 +426,7 @@ export async function captureArtboardWithAnnotations(
   const anns = allAnns.filter((a) => {
     // 流程线：只要源节点在当前画板就保留
     if (a.type === 'flow-line' && a.refNodeId && currentArtboardNodes[a.refNodeId]) {
-      const sb = getAdaptedAbsolutePosition(a.refNodeId, currentArtboardNodes, DESIGN_WIDTH, DESIGN_HEIGHT);
-      const sxMid = sb.x + sb.width / 2;
-      const syMid = sb.y + sb.height / 2;
-      return sxMid >= artboard.x && sxMid < artboard.x + artboard.width &&
-             syMid >= artboard.y && syMid < artboard.y + artboard.height;
+      return true;
     }
     // 其他批注：中心点在画板范围内
     const cx = a.x + a.width / 2;
@@ -360,13 +439,13 @@ export async function captureArtboardWithAnnotations(
   const resolvedAnns: AnnotationNode[] = [];
   for (const a of anns) {
     if (a.type !== 'flow-line') {
-      resolvedAnns.push(a);
+      resolvedAnns.push({ ...a, x: a.x - artboard.x, y: a.y - artboard.y });
       continue;
     }
     if (!a.refNodeId || !currentArtboardNodes[a.refNodeId]) continue;
-    const sb = getAdaptedAbsolutePosition(a.refNodeId, currentArtboardNodes, DESIGN_WIDTH, DESIGN_HEIGHT);
-    const sxMid = sb.x + sb.width / 2;
-    const syMid = sb.y + sb.height / 2;
+    const src = getNodeCenter(artboard, a.refNodeId);
+    const sxMid = src.x;
+    const syMid = src.y;
 
     if (a.refPageId) {
       // 跨页: 源节点旁的短箭头占位
@@ -390,9 +469,9 @@ export async function captureArtboardWithAnnotations(
 
     // 尝试在当前画板找目标节点
     if (currentArtboardNodes[dstId]) {
-      const db = getAdaptedAbsolutePosition(dstId, currentArtboardNodes, DESIGN_WIDTH, DESIGN_HEIGHT);
-      const dxMid = db.x + db.width / 2;
-      const dyMid = db.y + db.height / 2;
+      const dst = getNodeCenter(artboard, dstId);
+      const dxMid = dst.x;
+      const dyMid = dst.y;
       resolvedAnns.push({
         ...a,
         x: sxMid, y: syMid,
@@ -408,14 +487,16 @@ export async function captureArtboardWithAnnotations(
       for (const ab of p.artboards) {
         if (ab.nodes[dstId]) {
           // 找到了 — 计算目标节点在全局坐标系的位置
-          const db = getAdaptedAbsolutePosition(dstId, ab.nodes, DESIGN_WIDTH, DESIGN_HEIGHT);
-          const dxMid = ab.x + db.x + db.width / 2;
-          const dyMid = ab.y + db.y + db.height / 2;
+          const dst = getNodeGlobalCenter(ab, dstId);
+          const dxMid = dst.x;
+          const dyMid = dst.y;
+          const sxGlobal = artboard.x + sxMid;
+          const syGlobal = artboard.y + syMid;
           resolvedAnns.push({
             ...a,
             x: sxMid, y: syMid,
-            width: dxMid - sxMid, height: dyMid - syMid,
-            points: [{ x: 0, y: 0 }, { x: dxMid - sxMid, y: dyMid - syMid }],
+            width: dxMid - sxGlobal, height: dyMid - syGlobal,
+            points: [{ x: 0, y: 0 }, { x: dxMid - sxGlobal, y: dyMid - syGlobal }],
           });
           found = true;
           break;

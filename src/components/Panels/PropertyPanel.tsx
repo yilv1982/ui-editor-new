@@ -1,11 +1,20 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useEditorStore } from '../../stores/editorStore';
 import { useShallow } from 'zustand/react/shallow';
-import type { UIStyle } from '../../types';
 import { anchorPresets, getAnchorPreset } from '../../types';
 import { registerDropTarget } from '../../utils/customDrag';
 import { FONT_LIST } from '../../config/assetPaths';
 import AnnotationPropertyPanel from './AnnotationPropertyPanel';
+import {
+  moveNodeOnBridge,
+  renameNodeOnBridge,
+  resizeNodeOnBridge,
+  setImageOnBridge,
+  setRectTransformFieldsOnBridge,
+  setTextContentOnBridge,
+  setTextStyleOnBridge,
+  syncNodeVisualDelta,
+} from '../../services/BridgeArtboardStore';
 
 // 字色预设类型
 interface ColorPreset { color: string; label: string; desc: string; }
@@ -102,18 +111,46 @@ export default function PropertyPanel() {
     const id = s.selectedIds[0];
     return id ? s.nodes[id] : null;
   }));
-  const updateNode = useEditorStore((s) => s.updateNode);
-  const updateNodeStyle = useEditorStore((s) => s.updateNodeStyle);
-  const pushHistory = useEditorStore((s) => s.pushHistory);
-
   // 字色预设（从 JSON 加载 + 编辑状态）
   const [colorPresets, setColorPresets] = useState<ColorPreset[]>([]);
   const [editingPresets, setEditingPresets] = useState(false);
   const [editDraft, setEditDraft] = useState<ColorPreset[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textCommitTimerRef = useRef<number | null>(null);
+  const textLastCommittedRef = useRef({ nodeId: '', text: '', richText: false });
+  const skipNameCommitRef = useRef(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [textDraft, setTextDraft] = useState('');
+  const [richTextDraft, setRichTextDraft] = useState(false);
 
   useEffect(() => {
     fetch('/colorPresets.json').then(r => r.json()).then(setColorPresets).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    setNameDraft(selectedNode?.name ?? '');
+  }, [selectedNode?.id, selectedNode?.name]);
+
+  useEffect(() => {
+    const id = selectedNode?.id ?? '';
+    const text = selectedNode?.text ?? '';
+    const richText = !!selectedNode?.richText;
+    textLastCommittedRef.current = { nodeId: id, text, richText };
+    setTextDraft(text);
+    setRichTextDraft(richText);
+    if (textCommitTimerRef.current) {
+      window.clearTimeout(textCommitTimerRef.current);
+      textCommitTimerRef.current = null;
+    }
+  }, [selectedNode?.id]);
+
+  useEffect(() => {
+    return () => {
+      if (textCommitTimerRef.current) {
+        window.clearTimeout(textCommitTimerRef.current);
+        textCommitTimerRef.current = null;
+      }
+    };
   }, []);
 
   const savePresets = useCallback(async (presets: ColorPreset[]) => {
@@ -151,20 +188,103 @@ export default function PropertyPanel() {
   const node = selectedNode;
   if (!node) return null;
 
+  if (node.locked) {
+    return (
+      <div className="w-72 bg-[#1e1e2e] border-l border-[#313244] overflow-y-auto">
+        <div className="px-3 py-2 border-b border-[#313244]">
+          <h3 className="text-sm font-medium text-[#cdd6f4]">属性</h3>
+        </div>
+        <div className="px-3 py-3 space-y-3">
+          <div className="rounded border border-[#f38ba8]/40 bg-[#f38ba8]/10 px-3 py-2">
+            <div className="text-[13px] font-medium text-[#f38ba8]">节点已锁定</div>
+            <div className="mt-1 text-[12px] leading-5 text-[#a6adc8]">
+              锁定节点不会写入 Unity，也不会响应属性修改。请先在图层面板解锁后再编辑。
+            </div>
+          </div>
+          <Section title="基本">
+            <div className="flex items-center justify-between">
+              <span className="text-[13px] text-[#a6adc8]">名称</span>
+              <span className="max-w-36 truncate text-[13px] text-[#cdd6f4]" title={node.name}>{node.name}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[13px] text-[#a6adc8]">类型</span>
+              <span className="text-[13px] text-[#cdd6f4]">{node.type}</span>
+            </div>
+          </Section>
+        </div>
+      </div>
+    );
+  }
+
   // Button 是否有 Image 组件：显式标记优先，未标记时从 imageData 推断
   const btnHasImg = node.type !== 'button' || node.hasImage === true || (node.hasImage === undefined && !!node.imageData);
-
-  const update = (field: string, value: any) => {
-    pushHistory();
-    const extras: Record<string, any> = {};
-    if (field === 'x' || field === 'y') extras.originalAnchoredPosition = undefined;
-    if (field === 'width' || field === 'height') extras.originalSizeDelta = undefined;
-    updateNode(node.id, { [field]: value, ...extras });
+  const reportBridgeError = (err: unknown) => console.warn('Failed to sync property to Bridge:', err);
+  const patchNodeOnBridge = (patch: Partial<typeof node>) => {
+    void syncNodeVisualDelta(node, { ...node, ...patch }).catch(reportBridgeError);
+  };
+  const patchTextStyleOnBridge = (patch: { fontSize?: number; color?: string; fontPath?: string }) => {
+    void setTextStyleOnBridge(node.id, patch).catch(reportBridgeError);
+  };
+  const patchRectTransformOnBridge = (patch: Parameters<typeof setRectTransformFieldsOnBridge>[1]) => {
+    void setRectTransformFieldsOnBridge(node.id, patch).catch(reportBridgeError);
+  };
+  const commitTextOnBridge = (text: string, richText: boolean) => {
+    const last = textLastCommittedRef.current;
+    if (last.nodeId === node.id && last.text === text && last.richText === richText) return;
+    textLastCommittedRef.current = { nodeId: node.id, text, richText };
+    void setTextContentOnBridge(node.id, text, richText).catch(reportBridgeError);
+  };
+  const scheduleTextCommit = (text: string, richText: boolean, delay = 250) => {
+    if (textCommitTimerRef.current) window.clearTimeout(textCommitTimerRef.current);
+    textCommitTimerRef.current = window.setTimeout(() => {
+      textCommitTimerRef.current = null;
+      commitTextOnBridge(text, richText);
+    }, delay);
+  };
+  const updateTextDraft = (text: string, richText = richTextDraft, delay = 250) => {
+    setTextDraft(text);
+    setRichTextDraft(richText);
+    scheduleTextCommit(text, richText, delay);
+  };
+  const flushTextDraft = () => {
+    if (textCommitTimerRef.current) {
+      window.clearTimeout(textCommitTimerRef.current);
+      textCommitTimerRef.current = null;
+    }
+    commitTextOnBridge(textDraft, richTextDraft);
+  };
+  const commitNameDraft = () => {
+    if (skipNameCommitRef.current) {
+      skipNameCommitRef.current = false;
+      return;
+    }
+    const nextName = nameDraft.trim();
+    if (!nextName) {
+      setNameDraft(node.name);
+      return;
+    }
+    if (nextName === node.name) {
+      setNameDraft(nextName);
+      return;
+    }
+    void renameNodeOnBridge(node.id, nextName).catch(reportBridgeError);
   };
 
-  const updateStyle = (field: keyof UIStyle, value: any) => {
-    pushHistory();
-    updateNodeStyle(node.id, { [field]: value });
+  const updateTransform = (field: 'x' | 'y' | 'width' | 'height' | 'rotation', value: number) => {
+    if (node.locked) return;
+    if (field === 'x' || field === 'y') {
+      const x = field === 'x' ? value : node.x;
+      const y = field === 'y' ? value : node.y;
+      void moveNodeOnBridge(node.id, x, y, false).catch(reportBridgeError);
+      return;
+    }
+    if (field === 'width' || field === 'height') {
+      const width = field === 'width' ? value : node.width;
+      const height = field === 'height' ? value : node.height;
+      void resizeNodeOnBridge(node.id, width, height, false).catch(reportBridgeError);
+      return;
+    }
+    void syncNodeVisualDelta(node, { ...node, rotation: value }).catch(reportBridgeError);
   };
 
   return (
@@ -180,8 +300,17 @@ export default function PropertyPanel() {
             <span className="text-[13px] text-[#a6adc8]">名称</span>
             <input
               type="text"
-              value={node.name}
-              onChange={(e) => update('name', e.target.value)}
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={commitNameDraft}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+                if (e.key === 'Escape') {
+                  skipNameCommitRef.current = true;
+                  setNameDraft(node.name);
+                  e.currentTarget.blur();
+                }
+              }}
               className="w-32 text-sm"
             />
           </div>
@@ -199,7 +328,7 @@ export default function PropertyPanel() {
             <div className="flex items-center justify-between">
               <span className="text-[13px] text-[#a6adc8]">置灰</span>
               <button
-                onClick={() => { pushHistory(); updateNode(node.id, { interactable: node.interactable === false ? true : false }); }}
+                onClick={() => patchNodeOnBridge({ interactable: node.interactable === false ? true : false })}
                 className={`px-3 py-0.5 text-[13px] rounded ${node.interactable === false ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
                 title="灰化整个组件子树（参考 ImgUtil.SetButtonGray）"
               >
@@ -212,12 +341,12 @@ export default function PropertyPanel() {
         {/* 位置大小 */}
         <Section title="变换">
           <div className="grid grid-cols-2 gap-2">
-            <NumberField label="X" value={node.x} onChange={(v) => update('x', v)} />
-            <NumberField label="Y" value={node.y} onChange={(v) => update('y', v)} />
-            <NumberField label="W" value={node.width} onChange={(v) => update('width', v)} min={1} />
-            <NumberField label="H" value={node.height} onChange={(v) => update('height', v)} min={1} />
+            <NumberField label="X" value={node.x} onChange={(v) => updateTransform('x', v)} />
+            <NumberField label="Y" value={node.y} onChange={(v) => updateTransform('y', v)} />
+            <NumberField label="W" value={node.width} onChange={(v) => updateTransform('width', v)} min={1} />
+            <NumberField label="H" value={node.height} onChange={(v) => updateTransform('height', v)} min={1} />
           </div>
-          <NumberField label="旋转" value={node.rotation} onChange={(v) => update('rotation', v)} />
+          <NumberField label="旋转" value={node.rotation} onChange={(v) => updateTransform('rotation', v)} />
         </Section>
 
         {/* 锚点 Anchor */}
@@ -236,16 +365,10 @@ export default function PropertyPanel() {
                   <button
                     key={preset.key}
                     title={preset.label}
-                    onClick={() => {
-                      pushHistory();
-                      updateNode(node.id, {
+                    onClick={() => patchRectTransformOnBridge({
                         anchorMin: { ...preset.anchorMin },
                         anchorMax: { ...preset.anchorMax },
-                        // 清除 Unity 原始值缓存，导出时会基于新锚点重新计算
-                        originalAnchoredPosition: undefined,
-                        originalSizeDelta: undefined,
-                      });
-                    }}
+                    })}
                     className={`w-7 h-7 flex items-center justify-center relative ${
                       isActive ? 'bg-[#89b4fa]' : 'bg-[#313244] hover:bg-[#45475a]'
                     }`}
@@ -311,14 +434,11 @@ export default function PropertyPanel() {
               type="number" min={0} max={1} step={0.1}
               value={node.pivot?.x ?? 0.5}
               onChange={(e) => {
-                pushHistory();
                 const oldPx = node.pivot?.x ?? 0.5;
                 const newPx = Number(e.target.value);
-                // 保持 anchoredPosition 不变：调整 x 补偿 pivot 变化（与 Unity 行为一致）
-                updateNode(node.id, {
+                patchRectTransformOnBridge({
                   pivot: { x: newPx, y: node.pivot?.y ?? 0.5 },
-                  x: node.x + (oldPx - newPx) * node.width,
-                  originalAnchoredPosition: undefined,
+                  anchoredPosition: { x: node.x + (oldPx - newPx) * node.width, y: node.y },
                 });
               }}
               className="w-14 text-sm text-center"
@@ -327,32 +447,17 @@ export default function PropertyPanel() {
               type="number" min={0} max={1} step={0.1}
               value={node.pivot?.y ?? 0.5}
               onChange={(e) => {
-                pushHistory();
                 const oldPy = node.pivot?.y ?? 0.5;
                 const newPy = Number(e.target.value);
-                // Y 轴：编辑器 Y 朝下，Unity pivot Y 朝上
-                updateNode(node.id, {
+                patchRectTransformOnBridge({
                   pivot: { x: node.pivot?.x ?? 0.5, y: newPy },
-                  y: node.y + (oldPy - newPy) * node.height,
-                  originalAnchoredPosition: undefined,
+                  anchoredPosition: { x: node.x, y: node.y + (oldPy - newPy) * node.height },
                 });
               }}
               className="w-14 text-sm text-center"
             />
           </div>
         </Section>
-
-        {/* 样式 */}
-        {node.type !== 'component' && (
-          <Section title="样式">
-            <ColorField label="背景" value={node.style.backgroundColor} onChange={(v) => {
-              pushHistory();
-              const patch: Partial<UIStyle> = { backgroundColor: v };
-              if (v && v !== 'transparent') patch.backgroundOpacity = 1;
-              updateNodeStyle(node.id, patch);
-            }} />
-          </Section>
-        )}
 
         {/* 文字 */}
         {node.type === 'text' && (
@@ -367,11 +472,10 @@ export default function PropertyPanel() {
                   if (!ta) return;
                   const s = ta.selectionStart, e2 = ta.selectionEnd;
                   if (s === e2) return;
-                  const txt = node.text || '';
+                  const txt = textDraft;
                   const wrapped = `<b>${txt.slice(s, e2)}</b>`;
                   const newText = txt.slice(0, s) + wrapped + txt.slice(e2);
-                  pushHistory();
-                  updateNode(node.id, { text: newText, richText: true });
+                  updateTextDraft(newText, true, 0);
                   setTimeout(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = s + wrapped.length; }, 0);
                 }}
               >B</button>
@@ -383,11 +487,10 @@ export default function PropertyPanel() {
                   if (!ta) return;
                   const s = ta.selectionStart, e2 = ta.selectionEnd;
                   if (s === e2) return;
-                  const txt = node.text || '';
+                  const txt = textDraft;
                   const wrapped = `<i>${txt.slice(s, e2)}</i>`;
                   const newText = txt.slice(0, s) + wrapped + txt.slice(e2);
-                  pushHistory();
-                  updateNode(node.id, { text: newText, richText: true });
+                  updateTextDraft(newText, true, 0);
                   setTimeout(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = s + wrapped.length; }, 0);
                 }}
               >I</button>
@@ -404,12 +507,11 @@ export default function PropertyPanel() {
                     if (!ta) return;
                     const s = ta.selectionStart, e2 = ta.selectionEnd;
                     if (s === e2) return; // 无选区
-                    const txt = node.text || '';
+                    const txt = textDraft;
                     const selected = txt.slice(s, e2);
                     const wrapped = `<color=${c.color}>${selected}</color>`;
                     const newText = txt.slice(0, s) + wrapped + txt.slice(e2);
-                    pushHistory();
-                    updateNode(node.id, { text: newText, richText: true });
+                    updateTextDraft(newText, true, 0);
                     // 恢复光标到标签后
                     setTimeout(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = s + wrapped.length; }, 0);
                   }}
@@ -425,12 +527,11 @@ export default function PropertyPanel() {
                   if (!ta) return;
                   const s = ta.selectionStart, e2 = ta.selectionEnd;
                   if (s === e2) return;
-                  const txt = node.text || '';
+                  const txt = textDraft;
                   const selected = txt.slice(s, e2);
                   const wrapped = `<color=${e.target.value}>${selected}</color>`;
                   const newText = txt.slice(0, s) + wrapped + txt.slice(e2);
-                  pushHistory();
-                  updateNode(node.id, { text: newText, richText: true });
+                  updateTextDraft(newText, true, 0);
                 }}
               />
               {/* 清除颜色标签 */}
@@ -441,12 +542,11 @@ export default function PropertyPanel() {
                   const ta = textareaRef.current;
                   if (!ta) return;
                   const s = ta.selectionStart, e2 = ta.selectionEnd;
-                  const txt = node.text || '';
+                  const txt = textDraft;
                   const region = s === e2 ? txt : txt.slice(s, e2);
                   const cleaned = region.replace(/<\/?(?:color=[^>]*|color|b|i)>/g, '');
                   const newText = s === e2 ? cleaned : txt.slice(0, s) + cleaned + txt.slice(e2);
-                  pushHistory();
-                  updateNode(node.id, { text: newText, richText: newText.includes('<') });
+                  updateTextDraft(newText, newText.includes('<'), 0);
                   setTimeout(() => { ta.focus(); ta.selectionStart = s; ta.selectionEnd = s + cleaned.length; }, 0);
                 }}
               >
@@ -456,18 +556,19 @@ export default function PropertyPanel() {
             <div>
               <textarea
                 ref={textareaRef}
-                value={node.text || ''}
-                onChange={(e) => update('text', e.target.value)}
+                value={textDraft}
+                onChange={(e) => updateTextDraft(e.target.value)}
+                onBlur={flushTextDraft}
                 className="w-full text-sm bg-[#313244] border border-[#45475a] text-[#cdd6f4] rounded p-2 resize-none h-16 outline-none focus:border-[#89b4fa] font-mono"
               />
             </div>
             {/* 富文本预览 */}
-            {node.text && /(<color|<b>|<i>)/.test(node.text) && (
+            {textDraft && /(<color|<b>|<i>)/.test(textDraft) && (
               <div
                 className="w-full text-sm bg-[#11111b] border border-[#313244] rounded p-2 mt-1 break-all"
                 style={{ color: node.style.fontColor }}
                 dangerouslySetInnerHTML={{
-                  __html: (node.text || '')
+                  __html: textDraft
                     .replace(/</g, '&lt;').replace(/>/g, '&gt;')
                     .replace(/&lt;color=([^&]*)&gt;/g, '<span style="color:$1">')
                     .replace(/&lt;\/color&gt;/g, '</span>')
@@ -481,7 +582,10 @@ export default function PropertyPanel() {
               <span className="text-[13px] text-[#a6adc8]">字体</span>
               <select
                 value={node.fontPath || ''}
-                onChange={(e) => update('fontPath', e.target.value || undefined)}
+                onChange={(e) => {
+                  const fontPath = e.target.value;
+                  if (fontPath) patchTextStyleOnBridge({ fontPath });
+                }}
                 className="w-28 text-[12px] bg-[#313244] text-[#cdd6f4] border border-[#45475a] rounded px-1 py-0.5 outline-none"
               >
                 <option value="">默认</option>
@@ -503,7 +607,7 @@ export default function PropertyPanel() {
                   <button
                     key={s.value}
                     title={s.title}
-                    onClick={() => update('fontStyle', s.value)}
+                    onClick={() => patchNodeOnBridge({ fontStyle: s.value })}
                     className={`px-2.5 py-1 text-[13px] rounded ${
                       (node.fontStyle || 0) === s.value ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'
                     }`}
@@ -513,8 +617,8 @@ export default function PropertyPanel() {
                 ))}
               </div>
             </div>
-            <NumberField label="字号" value={node.style.fontSize} onChange={(v) => updateStyle('fontSize', v)} min={8} />
-            <ColorField label="字色" value={node.style.fontColor} onChange={(v) => updateStyle('fontColor', v)} />
+            <NumberField label="字号" value={node.style.fontSize} onChange={(v) => patchTextStyleOnBridge({ fontSize: v })} min={8} />
+            <ColorField label="字色" value={node.style.fontColor} onChange={(v) => patchTextStyleOnBridge({ color: v })} />
             {/* 预设颜色 */}
             <div className="space-y-1">
               <div className="flex items-center justify-between">
@@ -529,7 +633,7 @@ export default function PropertyPanel() {
                   <div key={i} className="relative group">
                     <button
                       title={`${c.label}${c.desc ? ' — ' + c.desc : ''}`}
-                      onClick={() => { pushHistory(); updateStyle('fontColor', c.color); }}
+                      onClick={() => patchTextStyleOnBridge({ color: c.color })}
                       className={`w-6 h-6 rounded border transition-all ${
                         node.style.fontColor === c.color ? 'border-[#89b4fa] ring-1 ring-[#89b4fa] scale-110' : 'border-[#45475a] hover:border-[#6c7086]'
                       }`}
@@ -586,10 +690,8 @@ export default function PropertyPanel() {
                     key={v}
                     title={['左上','中上','右上','左中','居中','右中','左下','中下','右下'][v]}
                     onClick={() => {
-                      pushHistory();
                       const hAlign: 'left'|'center'|'right' = ['left','center','right'][v % 3] as any;
-                      updateStyle('textAlign', hAlign);
-                      updateNode(node.id, { alignment: v });
+                      patchNodeOnBridge({ alignment: v, style: { ...node.style, textAlign: hAlign } });
                     }}
                     className={`w-7 h-7 flex items-center justify-center rounded ${
                       (node.alignment ?? 3) === v ? 'bg-[#4C7EF3] text-[#fff]' : 'bg-[#313244] text-[#6c7086] hover:text-[#a6adc8]'
@@ -632,7 +734,7 @@ export default function PropertyPanel() {
               <div className="flex items-center justify-between">
                 <span className="text-[13px] text-[#a6adc8]">可交互</span>
                 <button
-                  onClick={() => { pushHistory(); updateNode(node.id, { interactable: !node.interactable }); }}
+                  onClick={() => patchNodeOnBridge({ interactable: !node.interactable })}
                   className={`px-3 py-0.5 text-[13px] rounded ${node.interactable !== false ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
                 >
                   {node.interactable !== false ? '是' : '否'}
@@ -643,19 +745,9 @@ export default function PropertyPanel() {
             {node.type === 'button' && (
               <div className="flex items-center justify-between">
                 <span className="text-[13px] text-[#a6adc8]">Image组件</span>
-                <button
-                  onClick={() => {
-                    pushHistory();
-                    const next = node.hasImage === false;
-                    updateNode(node.id, {
-                      hasImage: next || undefined,
-                      ...(!next ? { imageData: undefined, sliceEnabled: false, imageType: undefined, imageColor: undefined } as any : {}),
-                    });
-                  }}
-                  className={`px-3 py-0.5 text-[13px] rounded ${btnHasImg ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-                >
+                <span className={`px-3 py-0.5 text-[13px] rounded ${btnHasImg ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}>
                   {btnHasImg ? '有' : '无'}
-                </button>
+                </span>
               </div>
             )}
 
@@ -664,7 +756,7 @@ export default function PropertyPanel() {
                 <span className="text-[13px] text-[#a6adc8]">方向</span>
                 <div className="flex gap-1">
                   {(['vertical', 'horizontal', 'both'] as const).map((d) => (
-                    <button key={d} onClick={() => { pushHistory(); updateNode(node.id, { scrollDirection: d }); }}
+                    <button key={d} onClick={() => patchNodeOnBridge({ scrollDirection: d })}
                       className={`px-2 py-0.5 text-[12px] rounded ${node.scrollDirection === d ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
                     >
                       {d === 'vertical' ? '垂直' : d === 'horizontal' ? '水平' : '双向'}
@@ -678,7 +770,7 @@ export default function PropertyPanel() {
               <div className="flex items-center justify-between">
                 <span className="text-[13px] text-[#a6adc8]">初始值</span>
                 <button
-                  onClick={() => { pushHistory(); updateNode(node.id, { isOn: !node.isOn }); }}
+                  onClick={() => patchNodeOnBridge({ isOn: !node.isOn })}
                   className={`px-3 py-0.5 text-[13px] rounded ${node.isOn ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
                 >
                   {node.isOn ? 'ON' : 'OFF'}
@@ -693,19 +785,11 @@ export default function PropertyPanel() {
           <Section title="图片资源">
             <ImagePicker
               imageData={node.imageData}
-              onChange={(path, sliceBorder) => {
-                pushHistory();
-                const updates: Record<string, any> = { imageData: path };
-                if (sliceBorder) {
-                  updates.sliceEnabled = true;
-                  updates.sliceBorder = sliceBorder;
-                  updates.imageType = 'Sliced';
-                }
-                updateNode(node.id, updates);
+              onChange={(path) => {
+                patchNodeOnBridge({ imageData: path });
               }}
               onClear={() => {
-                pushHistory();
-                updateNode(node.id, { imageData: undefined, sliceEnabled: false } as any);
+                void setImageOnBridge(node.id, '').catch(reportBridgeError);
               }}
             />
           </Section>
@@ -722,16 +806,15 @@ export default function PropertyPanel() {
                   type="color"
                   value={(node.imageColor || '#ffffff').slice(0, 7)}
                   onChange={(e) => {
-                    pushHistory();
                     const alpha = node.imageColor && node.imageColor.length === 9 ? node.imageColor.slice(7, 9) : 'ff';
-                    updateNode(node.id, { imageColor: e.target.value + alpha });
+                    patchNodeOnBridge({ imageColor: e.target.value + alpha });
                   }}
                   className="w-6 h-6 p-0 border-none cursor-pointer"
                 />
                 <input
                   type="text"
                   value={node.imageColor || '#ffffffff'}
-                  onChange={(e) => { pushHistory(); updateNode(node.id, { imageColor: e.target.value }); }}
+                  onChange={(e) => patchNodeOnBridge({ imageColor: e.target.value })}
                   className="w-[72px] text-[12px]"
                   placeholder="#RRGGBBAA"
                 />
@@ -746,10 +829,9 @@ export default function PropertyPanel() {
                   min={0} max={255} step={1}
                   value={node.imageColor && node.imageColor.length === 9 ? parseInt(node.imageColor.slice(7, 9), 16) : 255}
                   onChange={(e) => {
-                    pushHistory();
                     const hex = (node.imageColor || '#ffffff').slice(0, 7);
                     const alpha = parseInt(e.target.value).toString(16).padStart(2, '0');
-                    updateNode(node.id, { imageColor: hex + alpha });
+                    patchNodeOnBridge({ imageColor: hex + alpha });
                   }}
                   className="w-16 h-1 accent-[#89b4fa]"
                 />
@@ -763,7 +845,7 @@ export default function PropertyPanel() {
             <div className="flex items-center justify-between">
               <span className="text-[13px] text-[#a6adc8]">显示图像</span>
               <button
-                onClick={() => { pushHistory(); updateNode(node.id, { imageEnabled: node.imageEnabled === false ? true : false }); }}
+                onClick={() => patchNodeOnBridge({ imageEnabled: node.imageEnabled === false ? true : false })}
                 className={`px-3 py-0.5 text-[13px] rounded ${node.imageEnabled !== false ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
               >
                 {node.imageEnabled !== false ? '✓' : '✗'}
@@ -774,7 +856,7 @@ export default function PropertyPanel() {
             <div className="flex items-center justify-between">
               <span className="text-[13px] text-[#a6adc8]">Raycast Target</span>
               <button
-                onClick={() => { pushHistory(); updateNode(node.id, { imageRaycastTarget: node.imageRaycastTarget === false ? true : false }); }}
+                onClick={() => patchNodeOnBridge({ imageRaycastTarget: node.imageRaycastTarget === false ? true : false })}
                 className={`px-3 py-0.5 text-[13px] rounded ${node.imageRaycastTarget !== false ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
               >
                 {node.imageRaycastTarget !== false ? '✓' : '✗'}
@@ -789,11 +871,8 @@ export default function PropertyPanel() {
                   <div className="flex gap-1">
                     {(['Simple', 'Sliced', 'Tiled', 'Filled'] as const).map((t) => (
                       <button key={t} onClick={() => {
-                        pushHistory();
-                        updateNode(node.id, {
+                        patchNodeOnBridge({
                           imageType: t,
-                          sliceEnabled: t === 'Sliced',
-                          sliceBorder: t === 'Sliced' ? (node.sliceBorder || { left: 10, right: 10, top: 10, bottom: 10 }) : node.sliceBorder,
                         });
                       }}
                         className={`px-1.5 py-0.5 text-[11px] rounded ${(node.imageType || 'Simple') === t ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
@@ -809,7 +888,7 @@ export default function PropertyPanel() {
                   <div className="flex items-center justify-between">
                     <span className="text-[13px] text-[#a6adc8]">Fill Center</span>
                     <button
-                      onClick={() => { pushHistory(); updateNode(node.id, { fillCenter: node.fillCenter === false ? true : false }); }}
+                      onClick={() => patchNodeOnBridge({ fillCenter: node.fillCenter === false ? true : false })}
                       className={`px-3 py-0.5 text-[13px] rounded ${node.fillCenter !== false ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
                     >
                       {node.fillCenter !== false ? '✓' : '✗'}
@@ -824,7 +903,7 @@ export default function PropertyPanel() {
                       <span className="text-[13px] text-[#a6adc8]">Fill Method</span>
                       <select
                         value={node.fillMethod ?? 0}
-                        onChange={(e) => { pushHistory(); updateNode(node.id, { fillMethod: parseInt(e.target.value), fillOrigin: 0 }); }}
+                        onChange={(e) => patchNodeOnBridge({ fillMethod: parseInt(e.target.value), fillOrigin: 0 })}
                         className="text-[12px] bg-[#313244] text-[#cdd6f4] rounded px-1 py-0.5 border-none"
                       >
                         <option value={0}>Horizontal</option>
@@ -839,7 +918,7 @@ export default function PropertyPanel() {
                       <span className="text-[13px] text-[#a6adc8]">Fill Origin</span>
                       <select
                         value={node.fillOrigin ?? 0}
-                        onChange={(e) => { pushHistory(); updateNode(node.id, { fillOrigin: parseInt(e.target.value) }); }}
+                        onChange={(e) => patchNodeOnBridge({ fillOrigin: parseInt(e.target.value) })}
                         className="text-[12px] bg-[#313244] text-[#cdd6f4] rounded px-1 py-0.5 border-none"
                       >
                         {(node.fillMethod ?? 0) <= 1 ? (
@@ -875,7 +954,7 @@ export default function PropertyPanel() {
                           type="range"
                           min={0} max={1} step={0.01}
                           value={node.fillAmount ?? 1}
-                          onChange={(e) => { pushHistory(); updateNode(node.id, { fillAmount: parseFloat(e.target.value) }); }}
+                          onChange={(e) => patchNodeOnBridge({ fillAmount: parseFloat(e.target.value) })}
                           className="w-16 h-1 accent-[#89b4fa]"
                         />
                         <span className="text-[12px] text-[#a6adc8] w-8 text-right">
@@ -887,7 +966,7 @@ export default function PropertyPanel() {
                     <div className="flex items-center justify-between">
                       <span className="text-[13px] text-[#a6adc8]">Clockwise</span>
                       <button
-                        onClick={() => { pushHistory(); updateNode(node.id, { fillClockwise: node.fillClockwise === false ? true : false }); }}
+                        onClick={() => patchNodeOnBridge({ fillClockwise: node.fillClockwise === false ? true : false })}
                         className={`px-3 py-0.5 text-[13px] rounded ${node.fillClockwise !== false ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
                       >
                         {node.fillClockwise !== false ? '✓' : '✗'}
@@ -901,7 +980,7 @@ export default function PropertyPanel() {
                   <div className="flex items-center justify-between">
                     <span className="text-[13px] text-[#a6adc8]">Use Sprite Mesh</span>
                     <button
-                      onClick={() => { pushHistory(); updateNode(node.id, { useSpriteMesh: !node.useSpriteMesh }); }}
+                      onClick={() => patchNodeOnBridge({ useSpriteMesh: !node.useSpriteMesh })}
                       className={`px-3 py-0.5 text-[13px] rounded ${node.useSpriteMesh ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
                     >
                       {node.useSpriteMesh ? '✓' : '✗'}
@@ -915,28 +994,11 @@ export default function PropertyPanel() {
             <div className="flex items-center justify-between">
               <span className="text-[13px] text-[#a6adc8]">Preserve Aspect</span>
               <button
-                onClick={() => { pushHistory(); updateNode(node.id, { preserveAspect: !node.preserveAspect }); }}
+                onClick={() => patchNodeOnBridge({ preserveAspect: !node.preserveAspect })}
                 className={`px-3 py-0.5 text-[13px] rounded ${node.preserveAspect ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
               >
                 {node.preserveAspect ? '✓' : '✗'}
               </button>
-            </div>
-
-            {/* Mirror Type */}
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">Mirror</span>
-              <div className="flex gap-1">
-                {([undefined, 'Horizontal', 'Vertical', 'Quarter'] as const).map((m) => (
-                  <button key={m ?? 'None'} onClick={() => {
-                    pushHistory();
-                    updateNode(node.id, { mirrorType: m });
-                  }}
-                    className={`px-1.5 py-0.5 text-[11px] rounded ${node.mirrorType === m ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-                  >
-                    {m ?? 'None'}
-                  </button>
-                ))}
-              </div>
             </div>
 
             {/* Set Native Size */}
@@ -947,8 +1009,7 @@ export default function PropertyPanel() {
                     const img = new Image();
                     img.onload = () => {
                       if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-                        pushHistory();
-                        updateNode(node.id, { width: img.naturalWidth, height: img.naturalHeight });
+                        void resizeNodeOnBridge(node.id, img.naturalWidth, img.naturalHeight, false).catch(reportBridgeError);
                       }
                     };
                     img.src = node.imageData!;
@@ -965,8 +1026,7 @@ export default function PropertyPanel() {
               <span className="text-[13px] text-[#a6adc8]">Outline</span>
               <button
                 onClick={() => {
-                  pushHistory();
-                  updateNode(node.id, {
+                  patchNodeOnBridge({
                     outline: node.outline ? undefined : { color: '#000000', distance: [1, -1], useGraphicAlpha: true },
                   });
                 }}
@@ -978,23 +1038,22 @@ export default function PropertyPanel() {
             {node.outline && (
               <>
                 <ColorField label="Effect Color" value={node.outline.color} onChange={(v) => {
-                  pushHistory();
-                  updateNode(node.id, { outline: { ...node.outline!, color: v } });
+                  patchNodeOnBridge({ outline: { ...node.outline!, color: v } });
                 }} />
                 <div className="flex items-center gap-2">
                   <span className="text-[12px] text-[#6c7086] w-10">距离X</span>
                   <input type="number" value={node.outline.distance[0]} step={0.5}
-                    onChange={(e) => { pushHistory(); updateNode(node.id, { outline: { ...node.outline!, distance: [Number(e.target.value), node.outline!.distance[1]] } }); }}
+                    onChange={(e) => patchNodeOnBridge({ outline: { ...node.outline!, distance: [Number(e.target.value), node.outline!.distance[1]] } })}
                     className="w-14 text-sm text-center" />
                   <span className="text-[12px] text-[#6c7086] w-3">Y</span>
                   <input type="number" value={node.outline.distance[1]} step={0.5}
-                    onChange={(e) => { pushHistory(); updateNode(node.id, { outline: { ...node.outline!, distance: [node.outline!.distance[0], Number(e.target.value)] } }); }}
+                    onChange={(e) => patchNodeOnBridge({ outline: { ...node.outline!, distance: [node.outline!.distance[0], Number(e.target.value)] } })}
                     className="w-14 text-sm text-center" />
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-[13px] text-[#a6adc8]">Use Graphic Alpha</span>
                   <button
-                    onClick={() => { pushHistory(); updateNode(node.id, { outline: { ...node.outline!, useGraphicAlpha: !node.outline!.useGraphicAlpha } }); }}
+                    onClick={() => patchNodeOnBridge({ outline: { ...node.outline!, useGraphicAlpha: !node.outline!.useGraphicAlpha } })}
                     className={`px-3 py-0.5 text-[13px] rounded ${node.outline.useGraphicAlpha !== false ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
                   >
                     {node.outline.useGraphicAlpha !== false ? '✓' : '✗'}
@@ -1011,8 +1070,7 @@ export default function PropertyPanel() {
             <span className="text-[13px] text-[#a6adc8]">Mask</span>
             <button
               onClick={() => {
-                pushHistory();
-                updateNode(node.id, {
+                patchNodeOnBridge({
                   isMask: !node.isMask,
                   maskType: node.maskType || 'RectMask2D',
                 });
@@ -1027,7 +1085,7 @@ export default function PropertyPanel() {
               <span className="text-[13px] text-[#a6adc8]">类型</span>
               <div className="flex gap-1">
                 {(['Mask', 'RectMask2D'] as const).map((t) => (
-                  <button key={t} onClick={() => { pushHistory(); updateNode(node.id, { maskType: t }); }}
+                  <button key={t} onClick={() => patchNodeOnBridge({ maskType: t })}
                     className={`px-2 py-0.5 text-[12px] rounded ${node.maskType === t ? 'bg-[#f5c2e7] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
                   >
                     {t}
@@ -1044,11 +1102,10 @@ export default function PropertyPanel() {
             <span className="text-[13px] text-[#a6adc8]">启用</span>
             <button
               onClick={() => {
-                pushHistory();
                 if (node.layoutGroup?.enabled) {
-                  updateNode(node.id, { layoutGroup: { ...node.layoutGroup, enabled: false } });
+                  patchNodeOnBridge({ layoutGroup: { ...node.layoutGroup, enabled: false } });
                 } else {
-                  updateNode(node.id, {
+                  patchNodeOnBridge({
                     layoutGroup: {
                       isHorizontal: true,
                       spacing: 0,
@@ -1071,8 +1128,7 @@ export default function PropertyPanel() {
           {node.layoutGroup?.enabled && (() => {
             const lg = node.layoutGroup;
             const updateLG = (patch: Record<string, any>) => {
-              pushHistory();
-              updateNode(node.id, { layoutGroup: { ...lg, ...patch } });
+              patchNodeOnBridge({ layoutGroup: { ...lg, ...patch } });
             };
             const currentType = lg.layoutType || (lg.isHorizontal ? 'Horizontal' : 'Vertical');
             const isGrid = currentType === 'Grid';
@@ -1220,11 +1276,10 @@ export default function PropertyPanel() {
             <span className="text-[13px] text-[#a6adc8]">启用</span>
             <button
               onClick={() => {
-                pushHistory();
                 if (node.contentSizeFitter?.enabled) {
-                  updateNode(node.id, { contentSizeFitter: { ...node.contentSizeFitter, enabled: false } });
+                  patchNodeOnBridge({ contentSizeFitter: { ...node.contentSizeFitter, enabled: false } });
                 } else {
-                  updateNode(node.id, {
+                  patchNodeOnBridge({
                     contentSizeFitter: {
                       horizontalFit: 0,
                       verticalFit: 0,
@@ -1242,8 +1297,7 @@ export default function PropertyPanel() {
           {node.contentSizeFitter?.enabled && (() => {
             const csf = node.contentSizeFitter;
             const updateCSF = (patch: Record<string, any>) => {
-              pushHistory();
-              updateNode(node.id, { contentSizeFitter: { ...csf, ...patch } });
+              patchNodeOnBridge({ contentSizeFitter: { ...csf, ...patch } });
             };
             const fitOptions = [
               { value: 0, label: 'Unconstrained' },
@@ -1279,8 +1333,7 @@ export default function PropertyPanel() {
               <span className="text-[13px] text-[#a6adc8]">描边</span>
               <button
                 onClick={() => {
-                  pushHistory();
-                  updateNode(node.id, {
+                  patchNodeOnBridge({
                     textOutline: node.textOutline ? undefined : { color: '#000000', distance: [1, -1] },
                   });
                 }}
@@ -1292,17 +1345,16 @@ export default function PropertyPanel() {
             {node.textOutline && (
               <>
                 <ColorField label="描边色" value={node.textOutline.color} onChange={(v) => {
-                  pushHistory();
-                  updateNode(node.id, { textOutline: { ...node.textOutline!, color: v } });
+                  patchNodeOnBridge({ textOutline: { ...node.textOutline!, color: v } });
                 }} />
                 <div className="flex items-center gap-2">
                   <span className="text-[12px] text-[#6c7086] w-10">距离X</span>
                   <input type="number" value={node.textOutline.distance[0]} step={0.5}
-                    onChange={(e) => { pushHistory(); updateNode(node.id, { textOutline: { ...node.textOutline!, distance: [Number(e.target.value), node.textOutline!.distance[1]] } }); }}
+                    onChange={(e) => patchNodeOnBridge({ textOutline: { ...node.textOutline!, distance: [Number(e.target.value), node.textOutline!.distance[1]] } })}
                     className="w-14 text-sm text-center" />
                   <span className="text-[12px] text-[#6c7086] w-3">Y</span>
                   <input type="number" value={node.textOutline.distance[1]} step={0.5}
-                    onChange={(e) => { pushHistory(); updateNode(node.id, { textOutline: { ...node.textOutline!, distance: [node.textOutline!.distance[0], Number(e.target.value)] } }); }}
+                    onChange={(e) => patchNodeOnBridge({ textOutline: { ...node.textOutline!, distance: [node.textOutline!.distance[0], Number(e.target.value)] } })}
                     className="w-14 text-sm text-center" />
                 </div>
               </>
@@ -1313,8 +1365,7 @@ export default function PropertyPanel() {
               <span className="text-[13px] text-[#a6adc8]">阴影</span>
               <button
                 onClick={() => {
-                  pushHistory();
-                  updateNode(node.id, {
+                  patchNodeOnBridge({
                     textShadow: node.textShadow ? undefined : { color: '#000000', distance: [1, -1] },
                   });
                 }}
@@ -1326,188 +1377,17 @@ export default function PropertyPanel() {
             {node.textShadow && (
               <>
                 <ColorField label="阴影色" value={node.textShadow.color} onChange={(v) => {
-                  pushHistory();
-                  updateNode(node.id, { textShadow: { ...node.textShadow!, color: v } });
+                  patchNodeOnBridge({ textShadow: { ...node.textShadow!, color: v } });
                 }} />
                 <div className="flex items-center gap-2">
                   <span className="text-[12px] text-[#6c7086] w-10">距离X</span>
                   <input type="number" value={node.textShadow.distance[0]} step={0.5}
-                    onChange={(e) => { pushHistory(); updateNode(node.id, { textShadow: { ...node.textShadow!, distance: [Number(e.target.value), node.textShadow!.distance[1]] } }); }}
+                    onChange={(e) => patchNodeOnBridge({ textShadow: { ...node.textShadow!, distance: [Number(e.target.value), node.textShadow!.distance[1]] } })}
                     className="w-14 text-sm text-center" />
                   <span className="text-[12px] text-[#6c7086] w-3">Y</span>
                   <input type="number" value={node.textShadow.distance[1]} step={0.5}
-                    onChange={(e) => { pushHistory(); updateNode(node.id, { textShadow: { ...node.textShadow!, distance: [node.textShadow!.distance[0], Number(e.target.value)] } }); }}
+                    onChange={(e) => patchNodeOnBridge({ textShadow: { ...node.textShadow!, distance: [node.textShadow!.distance[0], Number(e.target.value)] } })}
                     className="w-14 text-sm text-center" />
-                </div>
-              </>
-            )}
-            {/* Gradient */}
-            <div className="flex items-center justify-between mt-2">
-              <span className="text-[13px] text-[#a6adc8]">渐变</span>
-              <button
-                onClick={() => {
-                  pushHistory();
-                  updateNode(node.id, {
-                    textGradient: node.textGradient ? undefined : { direction: 'Vertical' as const, color1: '#ffffff', color2: '#888888' },
-                  });
-                }}
-                className={`px-3 py-0.5 text-[13px] rounded ${node.textGradient ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-              >
-                {node.textGradient ? '已开启' : '关闭'}
-              </button>
-            </div>
-            {node.textGradient && (
-              <>
-                <div className="flex items-center justify-between">
-                  <span className="text-[13px] text-[#a6adc8]">方向</span>
-                  <div className="flex gap-1">
-                    {(['Vertical', 'Horizontal'] as const).map((d) => (
-                      <button key={d} onClick={() => { pushHistory(); updateNode(node.id, { textGradient: { ...node.textGradient!, direction: d } }); }}
-                        className={`px-2 py-0.5 text-[12px] rounded ${node.textGradient!.direction === d ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-                      >
-                        {d === 'Vertical' ? '↕ 上下' : '↔ 左右'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <ColorField label="颜色1" value={node.textGradient.color1} onChange={(v) => {
-                  pushHistory(); updateNode(node.id, { textGradient: { ...node.textGradient!, color1: v } });
-                }} />
-                <ColorField label="颜色2" value={node.textGradient.color2} onChange={(v) => {
-                  pushHistory(); updateNode(node.id, { textGradient: { ...node.textGradient!, color2: v } });
-                }} />
-                {/* 预览条 */}
-                <div className="h-4 rounded mt-1" style={{
-                  background: node.textGradient.direction === 'Horizontal'
-                    ? `linear-gradient(to right, ${node.textGradient.color1}, ${node.textGradient.color2})`
-                    : `linear-gradient(to bottom, ${node.textGradient.color1}, ${node.textGradient.color2})`,
-                }} />
-              </>
-            )}
-          </Section>
-        )}
-
-        {/* 九宫格 - image/button 类型 */}
-        {(node.type === 'image' || (node.type === 'button' && btnHasImg)) && (
-          <Section title="九宫格 (Sliced)">
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">启用</span>
-              <button
-                onClick={() => {
-                  pushHistory();
-                  const enabling = !node.sliceEnabled;
-                  updateNode(node.id, {
-                    sliceEnabled: enabling,
-                    sliceBorder: node.sliceBorder || { left: 10, right: 10, top: 10, bottom: 10 },
-                    imageType: enabling ? 'Sliced' : 'Simple',
-                  });
-                }}
-                className={`px-3 py-0.5 text-[13px] rounded ${
-                  node.sliceEnabled ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'
-                }`}
-              >
-                {node.sliceEnabled ? '已开启' : '关闭'}
-              </button>
-            </div>
-
-            {node.sliceEnabled && (
-              <>
-                {/* 可视化预览 */}
-                <div className="relative w-full aspect-square bg-[#313244] rounded overflow-hidden my-2">
-                  {node.imageData && (
-                    <img src={node.imageData} alt="" className="w-full h-full object-contain opacity-40" />
-                  )}
-                  {/* 九宫格线 */}
-                  <div className="absolute inset-0">
-                    {/* 左线 */}
-                    <div
-                      className="absolute top-0 bottom-0 border-l border-dashed border-[#f38ba8]"
-                      style={{ left: `${((node.sliceBorder?.left || 0) / node.width) * 100}%` }}
-                    />
-                    {/* 右线 */}
-                    <div
-                      className="absolute top-0 bottom-0 border-r border-dashed border-[#f38ba8]"
-                      style={{ right: `${((node.sliceBorder?.right || 0) / node.width) * 100}%` }}
-                    />
-                    {/* 上线 */}
-                    <div
-                      className="absolute left-0 right-0 border-t border-dashed border-[#89b4fa]"
-                      style={{ top: `${((node.sliceBorder?.top || 0) / node.height) * 100}%` }}
-                    />
-                    {/* 下线 */}
-                    <div
-                      className="absolute left-0 right-0 border-b border-dashed border-[#89b4fa]"
-                      style={{ bottom: `${((node.sliceBorder?.bottom || 0) / node.height) * 100}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* 数值输入 - 上 */}
-                <div className="flex items-center justify-center gap-1">
-                  <span className="text-[12px] text-[#6c7086] w-5 text-right">上</span>
-                  <input
-                    type="number"
-                    min={0}
-                    value={node.sliceBorder?.top ?? 10}
-                    onChange={(e) => {
-                      pushHistory();
-                      updateNode(node.id, {
-                        sliceBorder: { ...node.sliceBorder!, top: Number(e.target.value) },
-                      });
-                    }}
-                    className="w-14 text-sm text-center"
-                  />
-                </div>
-
-                {/* 数值输入 - 左 右 */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1">
-                    <span className="text-[12px] text-[#6c7086] w-5 text-right">左</span>
-                    <input
-                      type="number"
-                      min={0}
-                      value={node.sliceBorder?.left ?? 10}
-                      onChange={(e) => {
-                        pushHistory();
-                        updateNode(node.id, {
-                          sliceBorder: { ...node.sliceBorder!, left: Number(e.target.value) },
-                        });
-                      }}
-                      className="w-14 text-sm text-center"
-                    />
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="text-[12px] text-[#6c7086] w-5 text-right">右</span>
-                    <input
-                      type="number"
-                      min={0}
-                      value={node.sliceBorder?.right ?? 10}
-                      onChange={(e) => {
-                        pushHistory();
-                        updateNode(node.id, {
-                          sliceBorder: { ...node.sliceBorder!, right: Number(e.target.value) },
-                        });
-                      }}
-                      className="w-14 text-sm text-center"
-                    />
-                  </div>
-                </div>
-
-                {/* 数值输入 - 下 */}
-                <div className="flex items-center justify-center gap-1">
-                  <span className="text-[12px] text-[#6c7086] w-5 text-right">下</span>
-                  <input
-                    type="number"
-                    min={0}
-                    value={node.sliceBorder?.bottom ?? 10}
-                    onChange={(e) => {
-                      pushHistory();
-                      updateNode(node.id, {
-                        sliceBorder: { ...node.sliceBorder!, bottom: Number(e.target.value) },
-                      });
-                    }}
-                    className="w-14 text-sm text-center"
-                  />
                 </div>
               </>
             )}
@@ -1521,7 +1401,7 @@ export default function PropertyPanel() {
 // 图片选择器：支持搜索 Atlas 图片并替换
 function ImagePicker({ imageData, onChange, onClear }: {
   imageData?: string;
-  onChange: (path: string, sliceBorder?: { left: number; right: number; top: number; bottom: number }) => void;
+  onChange: (path: string) => void;
   onClear: () => void;
 }) {
   const [searching, setSearching] = useState(false);
@@ -1554,7 +1434,7 @@ function ImagePicker({ imageData, onChange, onClear }: {
     const atlasData = e.dataTransfer.getData('application/atlas-image');
     if (atlasData) {
       const img = JSON.parse(atlasData);
-      onChange(img.path, img.sliceBorder || undefined);
+      onChange(img.path);
     }
   }, [onChange]);
 
@@ -1567,7 +1447,7 @@ function ImagePicker({ imageData, onChange, onClear }: {
       element: el,
       onDrop: (type, data) => {
         if (type === 'application/atlas-image') {
-          onChange(data.path, data.sliceBorder || undefined);
+          onChange(data.path);
         }
       },
     });
@@ -1595,7 +1475,7 @@ function ImagePicker({ imageData, onChange, onClear }: {
               key={img.path}
               className="w-full flex items-center gap-1.5 px-2 py-1 text-left hover:bg-[#313244] transition-colors"
               onClick={() => {
-                onChange(img.path, img.sliceBorder || undefined);
+                onChange(img.path);
                 setSearching(false);
                 setQuery('');
                 setResults([]);

@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useEditorStore } from '../../stores/editorStore';
 import { startCustomDrag } from '../../utils/customDrag';
-import { importPrefabTemplateNode } from '../../utils/importPrefabTemplate';
 import { PrefabThumbnail, clearPrefabThumbnailMemoryCache } from './PrefabThumbnail';
+import { insertPrefabIntoActiveArtboard } from '../../services/BridgeArtboardStore';
 
 interface PrefabEntry {
   name: string;
@@ -87,48 +87,7 @@ export default function TemplateLibrary() {
   const handleInsert = async (entry: PrefabEntry) => {
     setLoading(entry.relPath);
     try {
-      const res = await fetch(`/api/prefabs/parse?path=${encodeURIComponent(entry.relPath)}&name=${encodeURIComponent(entry.name)}`);
-      const data = await res.json();
-      if (!data.root) { alert('解析失败'); setLoading(null); return; }
-      const store = useEditorStore.getState();
-
-      // 多画板导入策略（按规格）：
-      // - active 画板空（无 prefab 且无节点） → 塞进 active
-      // - active 画板已关联同一 prefab → 暂沿用旧行为（直接覆盖式塞进 active；增量同步通道走 Toolbar.handleUnitySyncIncremental）
-      // - active 画板已关联不同 prefab → 自动新建画板放右侧
-      // - active 画板无 prefab 但有节点 → 弹确认是否新建画板
-      const page = store.pages.find((p) => p.id === store.activePageId);
-      const activeAb = page?.artboards.find((a) => a.id === store.activeArtboardId);
-      const hasNodes = (activeAb?.rootIds.length ?? 0) > 0;
-      const hasSamePrefab = activeAb?.sourcePrefabPath === entry.relPath;
-      const hasOtherPrefab = !!activeAb?.sourcePrefabPath && !hasSamePrefab;
-
-      if (hasOtherPrefab) {
-        // 自动建新画板
-        store.addArtboard({ name: entry.name });
-      } else if (hasNodes && !hasSamePrefab) {
-        // 有节点但无 prefab 关联 → 询问
-        const ok = window.confirm('当前画板已有内容，是否新建画板导入？\n取消则覆盖当前画板。');
-        if (ok) {
-          store.addArtboard({ name: entry.name });
-        } else {
-          // 用户选择覆盖：先清空当前画板节点
-          const ids = [...store.rootIds];
-          ids.forEach((id) => store.deleteNode(id));
-        }
-      }
-
-      // 从此处开始,store 的 active 画板已对齐到目标画板（新建的或当前的）
-      store.pushHistory();
-      const currentStore = useEditorStore.getState();
-      currentStore.setSourcePrefabPath(entry.relPath);
-      const rootW = data.root.width || 800, rootH = data.root.height || 600;
-      const rootId = importPrefabTemplateNode(data.root, null, currentStore.addNode, {
-        name: data.name,
-        x: Math.max(0, (currentStore.previewWidth - rootW) / 2),
-        y: Math.max(0, (currentStore.previewHeight - rootH) / 2),
-      });
-      useEditorStore.getState().setSelectedIds([rootId]);
+      await insertPrefabIntoActiveArtboard(entry.relPath, { x: 540, y: 960 });
     } catch (err) { console.error('模板加载失败:', err); }
     setLoading(null);
   };
@@ -231,10 +190,19 @@ export default function TemplateLibrary() {
 function PrefabRow({ entry, loading, onInsert, indent }: {
   entry: PrefabEntry; loading: string | null; onInsert: (e: PrefabEntry) => void; indent?: boolean;
 }) {
+  const handleDrag = (event: React.MouseEvent) => {
+    startCustomDrag(
+      event,
+      'application/uieditor-prefab',
+      { relPath: entry.relPath, name: entry.name },
+      `<span>${entry.name}</span>`,
+    );
+  };
   return (
     <div className="flex items-center gap-1.5 py-0.5 hover:bg-[#313244] transition-colors rounded"
-      style={{ paddingLeft: indent ? 8 : 12, paddingRight: indent ? 0 : 0 }}>
-      <PrefabThumbnail relPath={entry.relPath} />
+      style={{ paddingLeft: indent ? 8 : 12, paddingRight: indent ? 0 : 0 }}
+      onMouseDown={handleDrag}>
+      <PrefabThumbnail relPath={entry.relPath} variant="content" />
       <span className="text-[13px] text-[#cdd6f4] truncate flex-1">{entry.name}</span>
       <button onClick={() => onInsert(entry)} disabled={loading === entry.relPath}
         className="shrink-0 px-2 py-0.5 text-[11px] bg-[#89b4fa] text-[#1e1e2e] rounded hover:bg-[#74c7ec] disabled:opacity-50 mr-2">

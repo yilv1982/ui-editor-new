@@ -55,6 +55,7 @@ export default function SceneToolbar({ onAlign }: Props) {
 
   return (
     <div
+      data-testid="scene-toolbar"
       className="absolute z-20 flex flex-col items-center gap-0.5 bg-[#1e1e2e]/90 backdrop-blur rounded-lg p-1 border border-[#313244]"
       style={{ left: 32, top: '50%', transform: 'translateY(-50%)' }}
     >
@@ -63,6 +64,7 @@ export default function SceneToolbar({ onAlign }: Props) {
         if (item === 'div') return <span key={`d${i}`} className="w-5 h-px bg-[#45475a] my-0.5" />;
         return (
           <button key={item.key} onClick={() => setSceneTool(item.key)}
+            data-testid={`scene-tool-${item.key}`}
             title={`${item.label} (${item.shortcut})`} className={btn(sceneTool === item.key)}>
             {item.icon}
           </button>
@@ -73,18 +75,18 @@ export default function SceneToolbar({ onAlign }: Props) {
       {selectedCount > 0 && (
         <>
           {divider}
-          <button className={alignBtn} title="左对齐 (Alt+A)" onClick={() => onAlign('left')}>{A.left}</button>
-          <button className={alignBtn} title="水平居中 (Alt+H)" onClick={() => onAlign('center-h')}>{A.centerH}</button>
-          <button className={alignBtn} title="右对齐 (Alt+D)" onClick={() => onAlign('right')}>{A.right}</button>
+          <button data-testid="scene-align-left" className={alignBtn} title="左对齐 (Alt+A)" onClick={() => onAlign('left')}>{A.left}</button>
+          <button data-testid="scene-align-center-h" className={alignBtn} title="水平居中 (Alt+H)" onClick={() => onAlign('center-h')}>{A.centerH}</button>
+          <button data-testid="scene-align-right" className={alignBtn} title="右对齐 (Alt+D)" onClick={() => onAlign('right')}>{A.right}</button>
           {divider}
-          <button className={alignBtn} title="顶对齐 (Alt+W)" onClick={() => onAlign('top')}>{A.top}</button>
-          <button className={alignBtn} title="垂直居中 (Alt+V)" onClick={() => onAlign('center-v')}>{A.centerV}</button>
-          <button className={alignBtn} title="底对齐 (Alt+S)" onClick={() => onAlign('bottom')}>{A.bottom}</button>
+          <button data-testid="scene-align-top" className={alignBtn} title="顶对齐 (Alt+W)" onClick={() => onAlign('top')}>{A.top}</button>
+          <button data-testid="scene-align-center-v" className={alignBtn} title="垂直居中 (Alt+V)" onClick={() => onAlign('center-v')}>{A.centerV}</button>
+          <button data-testid="scene-align-bottom" className={alignBtn} title="底对齐 (Alt+S)" onClick={() => onAlign('bottom')}>{A.bottom}</button>
           {selectedCount >= 3 && (
             <>
               {divider}
-              <button className={alignBtn} title="水平等距 (Ctrl+Alt+H)" onClick={() => onAlign('distribute-h')}>{A.distH}</button>
-              <button className={alignBtn} title="垂直等距 (Ctrl+Alt+V)" onClick={() => onAlign('distribute-v')}>{A.distV}</button>
+              <button data-testid="scene-align-distribute-h" className={alignBtn} title="水平等距 (Ctrl+Alt+H)" onClick={() => onAlign('distribute-h')}>{A.distH}</button>
+              <button data-testid="scene-align-distribute-v" className={alignBtn} title="垂直等距 (Ctrl+Alt+V)" onClick={() => onAlign('distribute-v')}>{A.distV}</button>
             </>
           )}
         </>

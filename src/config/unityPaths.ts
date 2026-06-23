@@ -17,7 +17,7 @@ export {
 } from './assetPaths';
 
 // ===== PROJECT_ROOT 自动推算 =====
-// 编辑器位置: .../fact-source/UIEditor → 同级 DreamlandProject
+// 编辑器位置: .../fact-source/UIEditor_new → 同级 DreamlandProject
 export const PROJECT_ROOT = path.resolve(process.cwd(), '../DreamlandProject').replace(/\\/g, '/');
 
 // ===== 配置文件读写（给 /api/unity/config 端点使用）=====
@@ -25,10 +25,12 @@ const CONFIG_PATH = path.join(process.cwd(), 'unity-config.json');
 
 interface UnityConfig {
   mcpUrl: string;
+  editorBridgeUrl: string;
 }
 
 const DEFAULTS: UnityConfig = {
-  mcpUrl: 'https://127.0.0.1:8081/mcp',
+  mcpUrl: 'https://127.0.0.1:8082/mcp',
+  editorBridgeUrl: 'http://127.0.0.1:8082',
 };
 
 let _config: UnityConfig = { ...DEFAULTS };

@@ -12,7 +12,12 @@
     "compare:visual": "node scripts/visual-compare.mjs",
     "sample:visual": "node scripts/visual-batch.mjs",
     "manifest:visual": "node scripts/visual-manifest.mjs",
-    "sample:components": "node scripts/visual-component-sample.mjs"
+    "sample:components": "node scripts/visual-component-sample.mjs",
+    "smoke:bridge-web": "node scripts/editor-bridge-web-smoke.mjs",
+    "smoke:bridge-shell": "node scripts/bridge-shell-context-smoke.mjs",
+    "smoke:bridge-ops": "node scripts/bridge-ops-smoke.mjs",
+    "smoke:thumbnail-cache": "node scripts/thumbnail-cache-smoke.mjs",
+    "smoke:thumbnail-render": "node scripts/thumbnail-render-smoke.mjs"
   },
   "dependencies": {
     "ag-psd": "^30.1.0",

@@ -1,8 +1,18 @@
 import { useState, useRef, useCallback, useEffect, createContext, useContext, memo } from 'react';
 import { useEditorStore } from '../../stores/editorStore';
 import { useShallow } from 'zustand/react/shallow';
-import { deepDuplicateNode } from '../../App';
 import type { NodeType } from '../../types';
+import {
+  closeBridgeArtboardSession,
+  createWidgetNodeOnBridge,
+  deleteNodeOnBridge,
+  duplicateBridgeArtboard,
+  duplicateBridgePage,
+  duplicateNodesOnBridge,
+  renameNodeOnBridge,
+  reparentNodesOnBridge,
+  setVisibleOnBridge,
+} from '../../services/BridgeArtboardStore';
 
 // 拖拽放置位置指示
 type DropPosition = 'before' | 'inside' | 'after';
@@ -37,9 +47,6 @@ const LayerItem = memo(function LayerItem({ nodeId, depth = 0 }: { nodeId: strin
   const selectedIds = useEditorStore((s) => s.selectedIds);
   const setSelectedIds = useEditorStore((s) => s.setSelectedIds);
   const updateNode = useEditorStore((s) => s.updateNode);
-  const deleteNode = useEditorStore((s) => s.deleteNode);
-  const addNode = useEditorStore((s) => s.addNode);
-  const reparentNode = useEditorStore((s) => s.reparentNode);
   const requestRenameCounter = useEditorStore((s) => s.requestRenameCounter);
 
   const { collapsedIds, toggleCollapse, setCollapsed: setCollapseState } = useContext(CollapseContext);
@@ -154,17 +161,13 @@ const LayerItem = memo(function LayerItem({ nodeId, depth = 0 }: { nodeId: strin
     });
 
     if (dropIndicator === 'inside') {
-      for (const id of dragIds) reparentNode(id, nodeId);
+      void reparentNodesOnBridge(dragIds.map((id) => ({ nodeId: id, parentId: nodeId })), dragIds);
     } else if (dropIndicator === 'before') {
       const idx = allChildren.indexOf(nodeId);
-      for (let i = 0; i < dragIds.length; i++) {
-        reparentNode(dragIds[i], targetParentId || null, idx + i);
-      }
+      void reparentNodesOnBridge(dragIds.map((id, i) => ({ nodeId: id, parentId: targetParentId || null, index: idx + i })), dragIds);
     } else if (dropIndicator === 'after') {
       const idx = allChildren.indexOf(nodeId);
-      for (let i = 0; i < dragIds.length; i++) {
-        reparentNode(dragIds[i], targetParentId || null, idx + 1 + i);
-      }
+      void reparentNodesOnBridge(dragIds.map((id, i) => ({ nodeId: id, parentId: targetParentId || null, index: idx + 1 + i })), dragIds);
     }
 
     setDropIndicator(null);
@@ -184,7 +187,10 @@ const LayerItem = memo(function LayerItem({ nodeId, depth = 0 }: { nodeId: strin
   // 添加子节点
   const addChild = (type: 'frame' | 'text' | 'image') => {
     const names = { frame: 'Frame', text: 'Text', image: 'Image' };
-    addNode(type, 0, 0, {
+    void createWidgetNodeOnBridge({
+      widgetType: type,
+      x: 0,
+      y: 0,
       parentId: nodeId,
       name: names[type],
       width: type === 'text' ? 200 : 200,
@@ -237,9 +243,8 @@ const LayerItem = memo(function LayerItem({ nodeId, depth = 0 }: { nodeId: strin
   };
 
   const finishRename = () => {
-    if (renamingValue.trim()) {
-      updateNode(nodeId, { name: renamingValue.trim() });
-    }
+    const name = renamingValue.trim();
+    if (name && name !== node.name) void renameNodeOnBridge(nodeId, name);
     setRenaming(false);
   };
 
@@ -323,7 +328,7 @@ const LayerItem = memo(function LayerItem({ nodeId, depth = 0 }: { nodeId: strin
         {/* 可见性 */}
         <button
           className={`text-[11px] px-0.5 ${node.visible ? 'text-[#6c7086] hover:text-[#a6adc8]' : 'text-[#f38ba8]'}`}
-          onClick={(e) => { e.stopPropagation(); updateNode(nodeId, { visible: !node.visible }); }}
+          onClick={(e) => { e.stopPropagation(); void setVisibleOnBridge(nodeId, !node.visible); }}
           title={node.visible ? '隐藏' : '显示'}
         >
           {node.visible ? '◉' : '○'}
@@ -352,11 +357,9 @@ const LayerItem = memo(function LayerItem({ nodeId, depth = 0 }: { nodeId: strin
           nodeId={nodeId}
           onAddChild={addChild}
           onRename={startRename}
-          onDelete={() => { deleteNode(nodeId); setContextMenu(null); }}
+          onDelete={() => { void deleteNodeOnBridge(nodeId); setContextMenu(null); }}
           onDuplicate={() => {
-            const store = useEditorStore.getState();
-            store.pushHistory();
-            deepDuplicateNode(nodeId, store.nodes, store.addNode, 20, 20);
+            void duplicateNodesOnBridge([nodeId]);
             setContextMenu(null);
           }}
           onClose={() => setContextMenu(null)}
@@ -375,9 +378,7 @@ function ContextMenu({ x, y, nodeId, onAddChild, onRename, onDelete, onDuplicate
   onDuplicate: () => void;
   onClose: () => void;
 }) {
-  const addNode = useEditorStore((s) => s.addNode);
   const selectedIds = useEditorStore((s) => s.selectedIds);
-  const deleteNode = useEditorStore((s) => s.deleteNode);
 
   const multiSelected = selectedIds.length > 1;
 
@@ -387,7 +388,10 @@ function ContextMenu({ x, y, nodeId, onAddChild, onRename, onDelete, onDuplicate
     const node = store.nodes[nodeId];
     if (!node) return;
     const names = { frame: 'Frame', text: 'Text', image: 'Image' };
-    addNode(type, node.x, node.y + node.height + 10, {
+    void createWidgetNodeOnBridge({
+      widgetType: type,
+      x: node.x,
+      y: node.y + node.height + 10,
       parentId: node.parentId || undefined,
       name: names[type],
       width: type === 'text' ? 200 : 200,
@@ -427,7 +431,12 @@ function ContextMenu({ x, y, nodeId, onAddChild, onRename, onDelete, onDuplicate
           <MenuItem
             label={`删除选中 (${selectedIds.length}个)`}
             className="text-[#f38ba8]"
-            onClick={() => { selectedIds.forEach((id) => deleteNode(id)); onClose(); }}
+            onClick={() => {
+              void (async () => {
+                for (const id of selectedIds) await deleteNodeOnBridge(id);
+              })();
+              onClose();
+            }}
           />
         ) : (
           <MenuItem label="删除" className="text-[#f38ba8]" onClick={onDelete} />
@@ -453,14 +462,12 @@ function MenuItem({ label, shortcut, className = '', onClick }: {
 
 export default function LayerPanel() {
   const rootIds = useEditorStore((s) => s.rootIds);
-  const addNode = useEditorStore((s) => s.addNode);
   const pages = useEditorStore((s) => s.pages);
   const activePageId = useEditorStore((s) => s.activePageId);
   const addPage = useEditorStore((s) => s.addPage);
   const deletePage = useEditorStore((s) => s.deletePage);
   const renamePage = useEditorStore((s) => s.renamePage);
   const switchPage = useEditorStore((s) => s.switchPage);
-  const duplicatePage = useEditorStore((s) => s.duplicatePage);
   const revealCounter = useEditorStore((s) => s.revealInLayerCounter);
 
   const [renamingPageId, setRenamingPageId] = useState<string | null>(null);
@@ -557,13 +564,15 @@ export default function LayerPanel() {
     const names = { frame: 'Frame', text: 'Text', image: 'Image' };
     const st = useEditorStore.getState();
     const parentId = st.selectedIds.length === 1 ? st.selectedIds[0] : undefined;
-    const newId = addNode(type, 0, 0, {
+    void createWidgetNodeOnBridge({
+      widgetType: type,
+      x: 0,
+      y: 0,
       name: names[type],
       width: type === 'text' ? 200 : 300,
       height: type === 'text' ? 40 : 200,
       parentId,
     });
-    st.setSelectedIds([newId]);
   };
 
   const startRenamePage = (pageId: string, currentName: string) => {
@@ -589,6 +598,9 @@ export default function LayerPanel() {
             return (
               <div
                 key={page.id}
+                data-testid="layer-page-tab"
+                data-page-id={page.id}
+                data-active={activePageId === page.id ? 'true' : 'false'}
                 className={`shrink-0 relative ${draggingPageId === page.id ? 'opacity-50' : ''}`}
                 draggable={renamingPageId !== page.id}
                 onDragStart={handlePageDragStart(page.id)}
@@ -682,10 +694,12 @@ export default function LayerPanel() {
         <>
           <div className="fixed inset-0 z-50" onClick={() => setPageContextMenu(null)} />
           <div
+            data-testid="layer-page-context-menu"
             className="fixed z-50 bg-[#313244] border border-[#45475a] rounded shadow-lg py-1 min-w-[120px]"
             style={{ left: pageContextMenu.x, top: pageContextMenu.y }}
           >
             <button
+              data-testid="layer-page-rename"
               className="w-full text-left px-3 py-1.5 text-[13px] text-[#cdd6f4] hover:bg-[#45475a]"
               onClick={() => {
                 const page = pages.find((p) => p.id === pageContextMenu.pageId);
@@ -696,29 +710,36 @@ export default function LayerPanel() {
               重命名
             </button>
             <button
-              className="w-full text-left px-3 py-1.5 text-[13px] text-[#cdd6f4] hover:bg-[#45475a]"
-              onClick={() => { duplicatePage(pageContextMenu.pageId); setPageContextMenu(null); }}
-            >
-              复制图层
-            </button>
-            <button
+              data-testid="layer-page-duplicate"
               className="w-full text-left px-3 py-1.5 text-[13px] text-[#cdd6f4] hover:bg-[#45475a]"
               onClick={() => {
-                const page = pages.find((p) => p.id === pageContextMenu.pageId);
-                if (!page) { setPageContextMenu(null); return; }
-                const v = window.prompt('设置分组名(留空 = 无分组,用于"状态对比"导出版式)', page.pageGroup ?? '');
-                if (v !== null) {
-                  useEditorStore.getState().setPageGroup(page.id, v.trim() || undefined);
-                }
+                const pageId = pageContextMenu.pageId;
+                void duplicateBridgePage(pageId).catch((err) => {
+                  console.error('复制图层失败:', err);
+                  window.alert(`复制图层失败: ${err instanceof Error ? err.message : String(err)}`);
+                });
                 setPageContextMenu(null);
               }}
             >
-              设置分组
+              复制图层
             </button>
             {pages.length > 1 && (
               <button
+                data-testid="layer-page-delete"
                 className="w-full text-left px-3 py-1.5 text-[13px] text-[#f38ba8] hover:bg-[#45475a]"
-                onClick={() => { deletePage(pageContextMenu.pageId); setPageContextMenu(null); }}
+                onClick={() => {
+                  const pageId = pageContextMenu.pageId;
+                  const page = pages.find((p) => p.id === pageId);
+                  void (async () => {
+                    if (page) {
+                      for (const artboard of page.artboards) {
+                        await closeBridgeArtboardSession(artboard.id, pageId).catch(() => undefined);
+                      }
+                    }
+                    deletePage(pageId);
+                  })();
+                  setPageContextMenu(null);
+                }}
               >
                 删除图层
               </button>
@@ -774,6 +795,12 @@ function ArtboardListBar() {
           return (
             <div
               key={a.id}
+              data-testid="layer-artboard-row"
+              data-artboard-id={a.id}
+              data-active={isActive ? 'true' : 'false'}
+              data-bridge-session-id={a.bridgeSessionId ?? ''}
+              data-working-prefab-path={a.bridgeWorkingPrefabPath ?? ''}
+              data-source-prefab-path={a.sourcePrefabPath ?? ''}
               onClick={() => setActiveArtboard(a.id)}
               onDoubleClick={() => startRename(a.id, a.name)}
               onContextMenu={(e) => {
@@ -813,10 +840,12 @@ function ArtboardListBar() {
         <>
           <div className="fixed inset-0 z-50" onClick={() => setMenu(null)} />
           <div
+            data-testid="layer-artboard-context-menu"
             className="fixed z-50 bg-[#313244] border border-[#45475a] rounded shadow-lg py-1 min-w-[120px]"
             style={{ left: menu.x, top: menu.y }}
           >
             <button
+              data-testid="layer-artboard-rename"
               className="w-full text-left px-3 py-1.5 text-[13px] text-[#cdd6f4] hover:bg-[#45475a]"
               onClick={() => {
                 const a = artboards.find((x) => x.id === menu.artboardId);
@@ -827,9 +856,14 @@ function ArtboardListBar() {
               重命名
             </button>
             <button
+              data-testid="layer-artboard-duplicate"
               className="w-full text-left px-3 py-1.5 text-[13px] text-[#cdd6f4] hover:bg-[#45475a]"
               onClick={() => {
-                useEditorStore.getState().duplicateArtboard(menu.artboardId);
+                const id = menu.artboardId;
+                void duplicateBridgeArtboard(id).catch((err) => {
+                  console.error('复制画板失败:', err);
+                  window.alert(`复制画板失败: ${err instanceof Error ? err.message : String(err)}`);
+                });
                 setMenu(null);
               }}
             >
@@ -837,8 +871,13 @@ function ArtboardListBar() {
             </button>
             {artboards.length > 1 && (
               <button
+                data-testid="layer-artboard-delete"
                 className="w-full text-left px-3 py-1.5 text-[13px] text-[#f38ba8] hover:bg-[#45475a]"
-                onClick={() => { deleteArtboard(menu.artboardId); setMenu(null); }}
+                onClick={() => {
+                  const id = menu.artboardId;
+                  void closeBridgeArtboardSession(id).finally(() => deleteArtboard(id));
+                  setMenu(null);
+                }}
               >
                 删除画板
               </button>

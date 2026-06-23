@@ -10,10 +10,10 @@ export const ASSET_PATHS = {
   prefab:       'Assets/HotRes2/UIs/Prefabs',
   commonPart:   'Assets/HotRes2/UIs/Prefabs/UICommons',
   font:         'Assets/HotRes2/Fonts',
-  bridgeScript: 'Assets/Editor/UIEditor/UIEditorBridgeSync.cs',
-  corsProxy:    'Assets/Editor/UIEditor/UIEditorCorsProxy.cs',
-  syncJson:     'Assets/Editor/uieditor_sync.json',
-  screenshot:   'Assets/Editor/uieditor_screenshot.png',
+  bridgeScript: 'Assets/Editor/UIEditorNew/UIEditorNewBridgeSync.cs',
+  corsProxy:    'Assets/Editor/UIEditorNew/UIEditorNewCorsProxy.cs',
+  syncJson:     'Assets/Editor/UIEditorNew/uieditor_new_sync.json',
+  screenshot:   'Assets/Editor/UIEditorNew/uieditor_new_screenshot.png',
 };
 
 /** 字体列表（属性面板下拉选项） */

@@ -2,7 +2,7 @@
 
 更新时间：2026-06-22。
 
-本文件盘点 `uieditor-new` 当前源码中仍然围绕 Unity WebGL 预览建立的依赖，并给出新截图式编辑链路中的处理策略。结论先行：WebGL 不再作为视觉真值，也不再作为节点编辑的实时执行环境；Web 侧只保留叠加交互、状态编辑和 patch 队列。
+本文件盘点 `UIEditor_new` 当前源码中仍然围绕 Unity WebGL 预览建立的依赖，并给出新截图式编辑链路中的处理策略。结论先行：WebGL 不再作为视觉真值，也不再作为节点编辑的实时执行环境；Web 侧只保留叠加交互、状态编辑和 patch 队列。
 
 ## 分级
 
@@ -23,7 +23,7 @@
 | `src/components/Canvas/SelectionOverlay.tsx` | 选中框、移动、缩放、旋转手柄 | bounds 类型来自 `UnityBridge`；拖动时调用 `beginInteractiveSync/endInteractiveSync` 和 `unityBridge.updateNode` | **拆分复用**：保留手柄与交互；bounds 来源改成 `renderSnapshot/exportNodeTree`；拖动结束生成视觉 patch，不再每帧发 WebGL 增量 |
 | `src/components/Panels/PrefabThumbnail.tsx` | 公共组件/Prefab 缩略图 | 优先读缓存；无缓存时把临时节点同步到 WebGL，再 `captureCanvas` 上传缓存 | **替换/保留辅助**：缓存与静态 fallback 保留；Unity 渲染缩略图改用 Editor Bridge `renderSnapshot`，不再依赖 WebGL ready |
 | `src/services/UnitySync.ts` | 同步当前 JSON 到 Unity Editor，含 MCP 兜底 | 现有 `/sync-preview`、`/sync-incremental` 仍接收 WebGL 导出 JSON；MCP fallback 会部署 C# 脚本和执行菜单 | **降级为旧链路**：新流程不要复用这个 JSON 同步接口保存 Prefab；可临时借鉴本地代理发现逻辑 |
-| `src/services/McpClient.ts` | 旧 MCP/CORS 连接客户端 | 连接 `https://127.0.0.1:8081/mcp`、HTTP fallback、8080 直连 MCP | **移除或隔离**：新流程不按 MCP 判定 Unity 可用性；MCP 告警应从默认 UI 状态中降级 |
+| `src/services/McpClient.ts` | 旧 MCP/CORS 连接客户端 | 默认已隔离到 `https://127.0.0.1:8082/mcp` 和 `uieditor_new_mcp_url`，仍保留 HTTP fallback、8080 直连 MCP | **降级为旧链路**：新流程不按 MCP 判定 Unity 可用性；MCP 告警应从默认 UI 状态中降级 |
 | `src/services/RuntimeDebugBridge.ts` | 运行时视觉探针、WebGL bounds 诊断、问题队列 | 依赖 `unityBridge.getDebugMessages/getLastNodeBounds/isContextLost/setSelection` 等 WebGL runtime 状态 | **降级为旧诊断**：保留历史问题解释价值；新诊断应改为截图 bbox、protected diff 和 patch 回放结果 |
 | `scripts/visual-*.mjs` | 批量视觉抽样、Unity reference 对比、WebGL bounds 分析 | 通过浏览器打开 WebGL 预览，比较 WebGL runtime 与 Unity reference | **降级/改造**：`capture-reference` 部分可复用；WebGL runtime bounds 相关判断要替换为 Editor Bridge bbox 与截图 diff |
 | `src/main.tsx` | 防止 WebGL 抢占 HTML 输入焦点 | 专门处理 WebGL canvas 每帧 focus | **移除**：截图式底图不需要 WebGL focus workaround |
@@ -35,7 +35,7 @@
 
 ## 当前已知运行现象
 
-当前 `npm run dev -- --host 127.0.0.1 --port 3105` 可启动 Web 服务和 Prefab 解析接口，但页面会报：
+当前 `npm run dev -- --host 127.0.0.1` 会使用 `4105` 端口启动 Web 服务和 Prefab 解析接口，但页面会报：
 
 ```text
 Failed to load: /unity/Build/unity.loader.js

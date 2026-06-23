@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { resetSession } from '../../services/McpClient';
 
-const STORAGE_KEY = 'uieditor_mcp_url';
+const STORAGE_KEY = 'uieditor_new_mcp_url';
 
 interface Props {
   open: boolean;
@@ -15,7 +15,7 @@ export default function UnitySettingsDialog({ open, onClose }: Props) {
   useEffect(() => {
     if (open) {
       const local = localStorage.getItem(STORAGE_KEY);
-      setMcpUrl(local || 'https://127.0.0.1:8081/mcp');
+      setMcpUrl(local || 'https://127.0.0.1:8082/mcp');
       setMessage('');
     }
   }, [open]);
@@ -23,7 +23,7 @@ export default function UnitySettingsDialog({ open, onClose }: Props) {
   if (!open) return null;
 
   const handleSave = () => {
-    const url = mcpUrl.trim() || 'https://127.0.0.1:8081/mcp';
+    const url = mcpUrl.trim() || 'https://127.0.0.1:8082/mcp';
     localStorage.setItem(STORAGE_KEY, url);
     resetSession(); // MCP 地址变更，清除旧 session
     setMessage('已保存到本地');
@@ -46,11 +46,11 @@ export default function UnitySettingsDialog({ open, onClose }: Props) {
               type="text"
               value={mcpUrl}
               onChange={e => setMcpUrl(e.target.value)}
-              placeholder="https://127.0.0.1:8081/mcp"
+              placeholder="https://127.0.0.1:8082/mcp"
               className="w-full px-3 py-1.5 text-sm bg-[#313244] text-[#cdd6f4] border border-[#45475a] rounded focus:border-[#89b4fa] outline-none font-mono"
             />
             <div className="text-[12px] text-[#6c7086] mt-1">
-              浏览器通过 HTTPS CORS 代理连接 Unity MCP（默认端口 8081）。
+              浏览器通过 HTTPS CORS 代理连接 Unity MCP（默认端口 8082）。
               首次同步时会自动部署代理脚本到 Unity 项目，Unity Editor 启动时自动运行。
             </div>
           </div>
@@ -61,12 +61,12 @@ export default function UnitySettingsDialog({ open, onClose }: Props) {
               部署后首次连接需信任自签名证书：在浏览器中打开{' '}
               <button
                 onClick={() => {
-                  const base = (mcpUrl.trim() || 'https://127.0.0.1:8081/mcp').replace(/\/mcp\/?$/, '');
+                  const base = (mcpUrl.trim() || 'https://127.0.0.1:8082/mcp').replace(/\/mcp\/?$/, '');
                   window.open(base, '_blank');
                 }}
                 className="text-[#89b4fa] hover:underline bg-transparent border-none cursor-pointer p-0 font-mono text-[12px]"
               >
-                {(mcpUrl.trim() || 'https://127.0.0.1:8081/mcp').replace(/\/mcp\/?$/, '')}
+                {(mcpUrl.trim() || 'https://127.0.0.1:8082/mcp').replace(/\/mcp\/?$/, '')}
               </button>
               {' '}并点击"高级 &rarr; 继续访问"。信任后即可正常连接。
             </div>

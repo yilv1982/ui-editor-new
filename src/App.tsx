@@ -3,19 +3,52 @@ import Toolbar from './components/Panels/Toolbar';
 import ComponentLibrary from './components/Panels/ComponentLibrary';
 import AtlasLibrary from './components/Panels/AtlasLibrary';
 import TemplateLibrary from './components/Panels/TemplateLibrary';
-import UnityCanvas from './components/Canvas/UnityCanvas';
+import JenkinsSyncButton from './components/Panels/JenkinsSyncButton';
+import UnityCanvas from './components/Canvas/BridgeSnapshotCanvas';
 import PropertyPanel from './components/Panels/PropertyPanel';
 import LayerPanel from './components/Panels/LayerPanel';
 import ShortcutsDialog from './components/Panels/ShortcutsDialog';
 import { useEditorStore } from './stores/editorStore';
 import { widgetDefs } from './data/componentDefs';
+import {
+  createWidgetNodeOnBridge,
+  copyNodesToActiveBridgeSession,
+  deleteNodeOnBridge,
+  deleteNodesFromBridgeSession,
+  duplicateNodesOnBridge,
+  groupNodesOnBridge,
+  moveNodesOnBridge,
+  redoActiveBridgeArtboard,
+  reorderNodesOnBridge,
+  setOpacityNodesOnBridge,
+  setVisibleNodesOnBridge,
+  undoActiveBridgeArtboard,
+  ungroupNodesOnBridge,
+} from './services/BridgeArtboardStore';
 
-function alignNodes(mode: 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'center-v' | 'distribute-h' | 'distribute-v') {
-  const { selectedIds, nodes, pushHistory, updateNode, previewWidth, previewHeight } = useEditorStore.getState();
-  if (selectedIds.length < 2 && !mode.startsWith('distribute')) {
-    if (selectedIds.length === 1) {
-      pushHistory();
-      const n = nodes[selectedIds[0]];
+function editableNodeIds(ids: string[], nodes: ReturnType<typeof useEditorStore.getState>['nodes']): string[] {
+  return ids.filter((id) => {
+    const node = nodes[id];
+    return !!node && !node.locked;
+  });
+}
+
+async function alignNodes(mode: 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'center-v' | 'distribute-h' | 'distribute-v') {
+  const { selectedIds, nodes, previewWidth, previewHeight } = useEditorStore.getState();
+  const editableSelectedIds = editableNodeIds(selectedIds, nodes);
+  const moves: Array<{ nodeId: string; x: number; y: number }> = [];
+  const pushMove = (nodeId: string, x: number, y: number) => {
+    const node = nodes[nodeId];
+    if (!node) return;
+    const nextX = Math.round(x);
+    const nextY = Math.round(y);
+    if (node.x === nextX && node.y === nextY) return;
+    moves.push({ nodeId, x: nextX, y: nextY });
+  };
+
+  if (editableSelectedIds.length < 2 && !mode.startsWith('distribute')) {
+    if (editableSelectedIds.length === 1) {
+      const n = nodes[editableSelectedIds[0]];
       if (!n) return;
 
       // 有父节点时以父节点为参考，否则以当前画布尺寸
@@ -27,55 +60,54 @@ function alignNodes(mode: 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'ce
       }
 
       switch (mode) {
-        case 'left': updateNode(n.id, { x: 0, originalAnchoredPosition: undefined }); break;
-        case 'right': updateNode(n.id, { x: refW - n.width, originalAnchoredPosition: undefined }); break;
-        case 'top': updateNode(n.id, { y: 0, originalAnchoredPosition: undefined }); break;
-        case 'bottom': updateNode(n.id, { y: refH - n.height, originalAnchoredPosition: undefined }); break;
-        case 'center-h': updateNode(n.id, { x: (refW - n.width) / 2, originalAnchoredPosition: undefined }); break;
-        case 'center-v': updateNode(n.id, { y: (refH - n.height) / 2, originalAnchoredPosition: undefined }); break;
+        case 'left': pushMove(n.id, 0, n.y); break;
+        case 'right': pushMove(n.id, refW - n.width, n.y); break;
+        case 'top': pushMove(n.id, n.x, 0); break;
+        case 'bottom': pushMove(n.id, n.x, refH - n.height); break;
+        case 'center-h': pushMove(n.id, (refW - n.width) / 2, n.y); break;
+        case 'center-v': pushMove(n.id, n.x, (refH - n.height) / 2); break;
       }
     }
+    await moveNodesOnBridge(moves, '节点已对齐', selectedIds);
     return;
   }
 
-  const selected = selectedIds.map((id) => nodes[id]).filter(Boolean);
+  const selected = editableSelectedIds.map((id) => nodes[id]).filter(Boolean);
   if (selected.length < 2) return;
-
-  pushHistory();
 
   switch (mode) {
     case 'left': {
       const minX = Math.min(...selected.map((n) => n.x));
-      selected.forEach((n) => updateNode(n.id, { x: minX, originalAnchoredPosition: undefined }));
+      selected.forEach((n) => pushMove(n.id, minX, n.y));
       break;
     }
     case 'right': {
       const maxRight = Math.max(...selected.map((n) => n.x + n.width));
-      selected.forEach((n) => updateNode(n.id, { x: maxRight - n.width, originalAnchoredPosition: undefined }));
+      selected.forEach((n) => pushMove(n.id, maxRight - n.width, n.y));
       break;
     }
     case 'top': {
       const minY = Math.min(...selected.map((n) => n.y));
-      selected.forEach((n) => updateNode(n.id, { y: minY, originalAnchoredPosition: undefined }));
+      selected.forEach((n) => pushMove(n.id, n.x, minY));
       break;
     }
     case 'bottom': {
       const maxBottom = Math.max(...selected.map((n) => n.y + n.height));
-      selected.forEach((n) => updateNode(n.id, { y: maxBottom - n.height, originalAnchoredPosition: undefined }));
+      selected.forEach((n) => pushMove(n.id, n.x, maxBottom - n.height));
       break;
     }
     case 'center-h': {
       const minX = Math.min(...selected.map((n) => n.x));
       const maxRight = Math.max(...selected.map((n) => n.x + n.width));
       const center = (minX + maxRight) / 2;
-      selected.forEach((n) => updateNode(n.id, { x: center - n.width / 2, originalAnchoredPosition: undefined }));
+      selected.forEach((n) => pushMove(n.id, center - n.width / 2, n.y));
       break;
     }
     case 'center-v': {
       const minY = Math.min(...selected.map((n) => n.y));
       const maxBottom = Math.max(...selected.map((n) => n.y + n.height));
       const center = (minY + maxBottom) / 2;
-      selected.forEach((n) => updateNode(n.id, { y: center - n.height / 2, originalAnchoredPosition: undefined }));
+      selected.forEach((n) => pushMove(n.id, n.x, center - n.height / 2));
       break;
     }
     case 'distribute-h': {
@@ -87,7 +119,7 @@ function alignNodes(mode: 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'ce
       const gap = (maxRight - minX - totalWidth) / (sorted.length - 1);
       let cx = minX;
       sorted.forEach((n) => {
-        updateNode(n.id, { x: cx, originalAnchoredPosition: undefined });
+        pushMove(n.id, cx, n.y);
         cx += n.width + gap;
       });
       break;
@@ -101,24 +133,27 @@ function alignNodes(mode: 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'ce
       const gap = (maxBottom - minY - totalHeight) / (sorted.length - 1);
       let cy = minY;
       sorted.forEach((n) => {
-        updateNode(n.id, { y: cy, originalAnchoredPosition: undefined });
+        pushMove(n.id, n.x, cy);
         cy += n.height + gap;
       });
       break;
     }
   }
+  await moveNodesOnBridge(moves, mode.startsWith('distribute') ? '节点已分布' : '节点已对齐', selectedIds);
 }
 
-function duplicateSelected() {
-  const { selectedIds, nodes, addNode, setSelectedIds, pushHistory } = useEditorStore.getState();
-  if (selectedIds.length === 0) return;
-  pushHistory();
-  const newIds: string[] = [];
-  selectedIds.forEach((id) => {
-    const newId = deepDuplicateNode(id, nodes, addNode, 20, 20);
-    if (newId) newIds.push(newId);
-  });
-  setSelectedIds(newIds);
+function activeBridgeSessionId(): string | null {
+  const state = useEditorStore.getState();
+  const page = state.pages.find((item) => item.id === state.activePageId);
+  const artboard = page?.artboards.find((item) => item.id === state.activeArtboardId);
+  return artboard?.bridgeSessionId ?? null;
+}
+
+async function duplicateSelected() {
+  const { selectedIds, nodes } = useEditorStore.getState();
+  const editableSelectedIds = editableNodeIds(selectedIds, nodes);
+  if (editableSelectedIds.length === 0) return;
+  await duplicateNodesOnBridge(editableSelectedIds);
 }
 
 /** 深拷贝节点及其所有子节点，返回新根节点 id */
@@ -159,77 +194,45 @@ function deepDuplicateNode(
   return newId;
 }
 
-/** 剪贴板：存储复制的节点快照 */
-let clipboard: { nodes: Record<string, any>; rootIds: string[] } | null = null;
+let bridgeClipboard: { sessionId: string; nodeIds: string[]; mode: 'copy' | 'cut' } | null = null;
 
-/** Ctrl+C — 复制选中节点（含子树）到剪贴板 */
+/** Ctrl+C — 只记录当前 Bridge session 内可安全复制的节点。 */
 function copySelected() {
   const { selectedIds, nodes } = useEditorStore.getState();
-  if (selectedIds.length === 0) return;
-
-  const copiedNodes: Record<string, any> = {};
-  function collectTree(id: string) {
-    const node = nodes[id];
-    if (!node || copiedNodes[id]) return;
-    copiedNodes[id] = JSON.parse(JSON.stringify(node));
-    for (const childId of node.children) {
-      collectTree(childId);
-    }
-  }
-  selectedIds.forEach(collectTree);
-  clipboard = { nodes: copiedNodes, rootIds: [...selectedIds] };
+  const editableSelectedIds = editableNodeIds(selectedIds, nodes);
+  if (editableSelectedIds.length === 0) return;
+  const sessionId = activeBridgeSessionId();
+  bridgeClipboard = sessionId ? { sessionId, nodeIds: [...editableSelectedIds], mode: 'copy' } : null;
 }
 
-/** Ctrl+V — 粘贴剪贴板中的节点 */
-function pasteNodes() {
-  if (!clipboard) return;
-  const { addNode, setSelectedIds, pushHistory } = useEditorStore.getState();
-  pushHistory();
-  const newIds: string[] = [];
-  const idMap = new Map<string, string>();
-
-  // 递归创建节点，建立旧ID→新ID映射
-  function pasteTree(srcId: string, newParentId: string | null) {
-    const src = clipboard!.nodes[srcId];
-    if (!src) return;
-
-    const options: Record<string, any> = {};
-    for (const key of Object.keys(src)) {
-      if (key === 'id' || key === 'children') continue;
-      const v = src[key];
-      if (v && typeof v === 'object' && !Array.isArray(v)) {
-        options[key] = { ...v };
-      } else {
-        options[key] = v;
-      }
-    }
-    options.parentId = newParentId || src.parentId || undefined;
-
-    const newId = addNode(src.type, src.x + 20, src.y + 20, options);
-    idMap.set(srcId, newId);
-
-    if (src.children) {
-      for (const childId of src.children) {
-        pasteTree(childId, newId);
-      }
-    }
-    return newId;
+/** Ctrl+V — 通过 Unity Bridge 在同 session 复制，跨 session 克隆到当前画板 root。 */
+async function pasteNodes() {
+  const sessionId = activeBridgeSessionId();
+  if (!bridgeClipboard || !sessionId) return;
+  const clip = bridgeClipboard;
+  if (bridgeClipboard && sessionId && bridgeClipboard.sessionId === sessionId) {
+    await duplicateNodesOnBridge(clip.nodeIds);
+  } else {
+    await copyNodesToActiveBridgeSession(clip.sessionId, clip.nodeIds);
   }
-
-  for (const rootId of clipboard.rootIds) {
-    const id = pasteTree(rootId, null);
-    if (id) newIds.push(id);
+  if (clip.mode === 'cut') {
+    if (clip.sessionId === sessionId) {
+      for (const nodeId of clip.nodeIds) await deleteNodeOnBridge(nodeId);
+    } else {
+      await deleteNodesFromBridgeSession(clip.sessionId, clip.nodeIds);
+    }
+    bridgeClipboard = null;
   }
-  setSelectedIds(newIds);
 }
 
-/** Ctrl+X — 剪切 */
+/** Ctrl+X — 标记剪切；粘贴成功后再通过 Bridge 删除源节点，避免剪贴板 nodeId 失效。 */
 function cutSelected() {
   const state = useEditorStore.getState();
   if (state.selectedIds.length === 0) return;
-  copySelected();
-  state.pushHistory();
-  state.selectedIds.forEach((id) => state.deleteNode(id));
+  const ids = editableNodeIds(state.selectedIds, state.nodes);
+  if (ids.length === 0) return;
+  const sessionId = activeBridgeSessionId();
+  bridgeClipboard = sessionId ? { sessionId, nodeIds: [...ids], mode: 'cut' } : null;
 }
 
 export default function App() {
@@ -367,16 +370,13 @@ export default function App() {
           switch (e.key) {
             case 'z': case 'Z':
               e.preventDefault();
-              state.redo();
+              void redoActiveBridgeArtboard();
               if (inInput) (document.activeElement as HTMLElement)?.blur();
               return;
             case 's': case 'S':
               if (inInput) return;
               e.preventDefault();
-              {
-                const name = prompt('另存为存档名:', '');
-                if (name && name.trim()) state.saveToLocal(name.trim());
-              }
+              window.dispatchEvent(new Event('uieditor:save'));
               return;
             case 'h': case 'H':
               if (inInput) return;
@@ -391,17 +391,17 @@ export default function App() {
             case 'g': case 'G':
               if (inInput) return;
               e.preventDefault();
-              state.ungroupSelected();
+              void ungroupNodesOnBridge(editableNodeIds(state.selectedIds, state.nodes));
               return;
             case '}': case ']':
               if (inInput) return;
               e.preventDefault();
-              state.selectedIds.forEach((id) => state.reorderNode(id, 'top'));
+              void reorderNodesOnBridge(editableNodeIds(state.selectedIds, state.nodes), 'top');
               return;
             case '{': case '[':
               if (inInput) return;
               e.preventDefault();
-              state.selectedIds.forEach((id) => state.reorderNode(id, 'bottom'));
+              void reorderNodesOnBridge(editableNodeIds(state.selectedIds, state.nodes), 'bottom');
               return;
           }
         }
@@ -409,20 +409,20 @@ export default function App() {
         switch (e.key) {
           case 'z':
             e.preventDefault();
-            state.undo();
+            void undoActiveBridgeArtboard();
             if (inInput) (document.activeElement as HTMLElement)?.blur();
             return;
-          case 'y': e.preventDefault(); state.redo(); if (inInput) (document.activeElement as HTMLElement)?.blur(); return;
-          case 's': e.preventDefault(); state.saveToLocal('_quicksave'); return;
+          case 'y': e.preventDefault(); void redoActiveBridgeArtboard(); if (inInput) (document.activeElement as HTMLElement)?.blur(); return;
+          case 's': e.preventDefault(); window.dispatchEvent(new Event('uieditor:save')); return;
         }
         if (inInput) return;
         switch (e.key) {
-          case 'd': e.preventDefault(); duplicateSelected(); return;
+          case 'd': e.preventDefault(); void duplicateSelected(); return;
           case 'a': e.preventDefault(); state.setSelectedIds(Object.keys(state.nodes)); return;
           case 'c': e.preventDefault(); copySelected(); return;
-          case 'v': e.preventDefault(); pasteNodes(); return;
+          case 'v': e.preventDefault(); void pasteNodes(); return;
           case 'x': e.preventDefault(); cutSelected(); return;
-          case 'g': e.preventDefault(); state.groupSelected(); return;
+          case 'g': e.preventDefault(); void groupNodesOnBridge(editableNodeIds(state.selectedIds, state.nodes)); return;
           case 'h': e.preventDefault(); state.toggleAnnotationLayer(); return;
           case 'r': e.preventDefault(); state.toggleRulers(); return;
           case 'l': e.preventDefault(); {
@@ -451,8 +451,8 @@ export default function App() {
           case '1': e.preventDefault(); actualSize(); return;
           case '=': case '+': e.preventDefault(); zoomBy(1.2); return;
           case '-': case '_': e.preventDefault(); zoomBy(1 / 1.2); return;
-          case ']': e.preventDefault(); state.selectedIds.forEach((id) => state.reorderNode(id, 'up')); return;
-          case '[': e.preventDefault(); state.selectedIds.forEach((id) => state.reorderNode(id, 'down')); return;
+          case ']': e.preventDefault(); void reorderNodesOnBridge(editableNodeIds(state.selectedIds, state.nodes), 'up'); return;
+          case '[': e.preventDefault(); void reorderNodesOnBridge(editableNodeIds(state.selectedIds, state.nodes), 'down'); return;
           case 'PageUp':
           case 'PageDown': {
             e.preventDefault();
@@ -476,15 +476,15 @@ export default function App() {
         };
         if (map[k]) {
           e.preventDefault();
-          alignNodes(map[k]);
+          void alignNodes(map[k]);
           return;
         }
       }
       // Ctrl+Alt+H/V 分布
       if ((e.ctrlKey || e.metaKey) && e.altKey && !inInput) {
         const k = e.key.toLowerCase();
-        if (k === 'h') { e.preventDefault(); alignNodes('distribute-h'); return; }
-        if (k === 'v') { e.preventDefault(); alignNodes('distribute-v'); return; }
+        if (k === 'h') { e.preventDefault(); void alignNodes('distribute-h'); return; }
+        if (k === 'v') { e.preventDefault(); void alignNodes('distribute-v'); return; }
       }
 
       if (inInput) return;
@@ -534,13 +534,18 @@ export default function App() {
           state.selectedAnnotationIds.forEach((id) => state.deleteAnnotation(id));
           return;
         }
-        state.selectedIds.forEach((id) => state.deleteNode(id));
+        void (async () => {
+          for (const id of editableNodeIds([...state.selectedIds], state.nodes)) {
+            await deleteNodeOnBridge(id);
+          }
+        })();
         return;
       }
 
       // F2 全局重命名：通知图层面板启动输入框
       if (e.key === 'F2') {
         if (state.selectedIds.length === 1) {
+          if (state.nodes[state.selectedIds[0]]?.locked) return;
           e.preventDefault();
           state.requestRenameSelected();
         }
@@ -571,7 +576,7 @@ export default function App() {
         // Enter → 进入文本节点的内联编辑
         if (e.key === 'Enter' && state.selectedIds.length === 1) {
           const n = state.nodes[state.selectedIds[0]];
-          if (n && n.type === 'text') {
+          if (n && n.type === 'text' && !n.locked) {
             e.preventDefault();
             state.setEditingTextId(n.id);
             return;
@@ -583,7 +588,7 @@ export default function App() {
           if (ids.length === 0) return;
           e.preventDefault();
           const anyVisible = ids.some((id) => state.nodes[id]?.visible !== false);
-          ids.forEach((id) => state.updateNode(id, { visible: !anyVisible }));
+          void setVisibleNodesOnBridge(ids, !anyVisible, ids);
           return;
         }
 
@@ -592,12 +597,7 @@ export default function App() {
           e.preventDefault();
           const n = parseInt(e.key, 10);
           const opacity = n === 0 ? 1 : n / 10;
-          state.pushHistory();
-          state.selectedIds.forEach((id) => {
-            const node = state.nodes[id];
-            if (!node) return;
-            state.updateNodeStyle(id, { opacity });
-          });
+          void setOpacityNodesOnBridge(editableNodeIds(state.selectedIds, state.nodes), opacity, state.selectedIds);
           return;
         }
 
@@ -630,17 +630,18 @@ export default function App() {
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
         e.preventDefault();
         if (state.selectedIds.length === 0) return;
-        if (!e.repeat) state.pushHistory();
-        state.selectedIds.forEach((id) => {
+        const moves = editableNodeIds(state.selectedIds, state.nodes).flatMap((id) => {
           const n = state.nodes[id];
-          if (!n) return;
+          if (!n) return [];
           switch (e.key) {
-            case 'ArrowUp': state.moveNode(id, n.x, n.y - moveStep); break;
-            case 'ArrowDown': state.moveNode(id, n.x, n.y + moveStep); break;
-            case 'ArrowLeft': state.moveNode(id, n.x - moveStep, n.y); break;
-            case 'ArrowRight': state.moveNode(id, n.x + moveStep, n.y); break;
+            case 'ArrowUp': return [{ nodeId: id, x: n.x, y: n.y - moveStep }];
+            case 'ArrowDown': return [{ nodeId: id, x: n.x, y: n.y + moveStep }];
+            case 'ArrowLeft': return [{ nodeId: id, x: n.x - moveStep, y: n.y }];
+            case 'ArrowRight': return [{ nodeId: id, x: n.x + moveStep, y: n.y }];
+            default: return [];
           }
         });
+        void moveNodesOnBridge(moves, '节点已移动', state.selectedIds);
       }
     };
 
@@ -690,6 +691,10 @@ export default function App() {
           <div className="flex-1 overflow-hidden">
             {leftTab === 'components' ? <ComponentLibrary /> : leftTab === 'atlas' ? <AtlasLibrary /> : <TemplateLibrary />}
           </div>
+          {/* 底部：Jenkins 同步按钮（三个 tab 共用） */}
+          <div className="shrink-0 px-3 py-2 border-t border-[#313244]">
+            <JenkinsSyncButton />
+          </div>
         </div>
         )}
         {/* 图层面板 + 基础控件 */}
@@ -732,15 +737,13 @@ export default function App() {
                   onClick={() => {
                     const store = useEditorStore.getState();
                     const parentId = store.selectedIds.length === 1 ? store.selectedIds[0] : undefined;
-                    const newId = store.addNode(w.type, 0, 0, {
+                    void createWidgetNodeOnBridge({
+                      widgetType: w.type,
                       name: w.name,
                       width: w.defaultWidth,
                       height: w.defaultHeight,
                       parentId,
-                      scrollDirection: w.type === 'scrollview' ? 'vertical' : undefined,
-                      interactable: w.type === 'button' ? true : undefined,
-                    } as any);
-                    store.setSelectedIds([newId]);
+                    });
                   }}
                   className="flex flex-col items-center p-1 rounded bg-[#313244] hover:bg-[#45475a] transition-colors"
                   title={w.displayName}

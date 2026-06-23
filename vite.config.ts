@@ -12,7 +12,8 @@ import { debugServerPlugin } from './src/plugins/debugServer'
 export default defineConfig({
   plugins: [react(), tailwindcss(), atlasServerPlugin(), prefabServerPlugin(), unityBridgePlugin(), aiNormalizePlugin(), saveServerPlugin(), presenceServerPlugin(), debugServerPlugin()],
   server: {
-    port: 3000,
+    port: 4105,
+    strictPort: true,
     host: '0.0.0.0',
     open: true,
   },

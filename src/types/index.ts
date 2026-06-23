@@ -279,6 +279,18 @@ export interface Artboard {
   rootIds: string[];
   // 来源 prefab 路径（增量同步用），如 Assets/HotRes/UI/Prefab/Common/UI_Common_ShowReward.prefab
   sourcePrefabPath: string | null;
+  // UIEditor_new Bridge 会话字段。老界面仍读 Artboard，但 Prefab 主状态在 Unity 临时 Prefab / working root。
+  bridgeSessionId?: string;
+  bridgeWorkingPrefabPath?: string;
+  bridgeTargetPrefabPath?: string;
+  bridgeRevision?: string;
+  bridgeRootNodeId?: string;
+  bridgeSnapshot?: any;
+  bridgeSnapshotUrl?: string | null;
+  bridgeDirty?: boolean;
+  bridgeUndoAvailable?: boolean;
+  bridgeRedoAvailable?: boolean;
+  bridgeStatus?: string;
   sidebar?: SidebarBlock[];
   sidebarEnabled?: boolean;
 }

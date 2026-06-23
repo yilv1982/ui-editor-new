@@ -2959,13 +2959,21 @@ export function prefabServerPlugin(): Plugin {
         const relPath = url.searchParams.get('path') || '';
         const variant = url.searchParams.get('variant') || 'canvas';
         if (!relPath) { res.statusCode = 400; res.end(); return; }
+        const normalizedRel = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
+        if (normalizedRel.startsWith('Assets/Temp/UIEditorNew/') || normalizedRel.startsWith('Temp/UIEditorNew/') || normalizedRel.includes('/Assets/Temp/UIEditorNew/') || normalizedRel.includes('/Temp/UIEditorNew/')) {
+          res.statusCode = 403;
+          res.end('temporary prefab thumbnails are not cacheable');
+          return;
+        }
 
         const file = thumbFilePath(relPath, variant);
 
         if (req.method === 'GET') {
           if (fs.existsSync(file) && !isPrefabNewer(relPath, file)) {
             res.setHeader('Content-Type', 'image/jpeg');
-            res.setHeader('Cache-Control', 'public, max-age=86400');
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
             res.end(fs.readFileSync(file));
           } else {
             res.statusCode = 404;

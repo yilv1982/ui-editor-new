@@ -15,12 +15,12 @@ export async function checkConnection(): Promise<boolean> {
 
 /** 全量同步到 Unity */
 export async function syncToUnity(exportJson: string): Promise<{ success: boolean; nodeCount: number; elapsed: number }> {
-  return doSync(exportJson, 'UIEditor/Bridge Sync');
+  return doSync(exportJson, 'UIEditorNew/Bridge Sync');
 }
 
 /** 增量同步：写回原 prefab，最大限度保留 fileID（保留程序拖的引用） */
 export async function syncIncrementalToUnity(exportJson: string): Promise<{ success: boolean; nodeCount: number; elapsed: number }> {
-  return doSync(exportJson, 'UIEditor/Bridge Sync Incremental');
+  return doSync(exportJson, 'UIEditorNew/Bridge Sync Incremental');
 }
 
 async function doSync(exportJson: string, menuPath: string): Promise<{ success: boolean; nodeCount: number; elapsed: number }> {
@@ -83,8 +83,8 @@ function getUnityProxyBases(): string[] {
   return Array.from(new Set([
     configuredBase,
     configuredBase.startsWith('https://') ? configuredBase.replace('https://', 'http://') : configuredBase,
-    'https://127.0.0.1:8081',
-    'http://127.0.0.1:8081',
+    'https://127.0.0.1:8082',
+    'http://127.0.0.1:8082',
   ]));
 }
 
@@ -117,7 +117,7 @@ async function syncViaUnityProxy(exportJson: string, menuPath: string): Promise<
 /** 触发 Unity 截图 */
 export async function captureScreenshot(): Promise<void> {
   await McpClient.callTool('execute_menu_item', {
-    menu_path: 'UIEditor/Bridge Screenshot',
+    menu_path: 'UIEditorNew/Bridge Screenshot',
   });
 }
 
@@ -172,17 +172,17 @@ using System.Reflection;
 /// <summary>
 /// Web UI Editor 实时同步桥接 — 自包含版本
 /// </summary>
-public static class UIEditorBridgeSync
+public static class UIEditorNewBridgeSync
 {
-    private const string PREVIEW_NAME = "__UIEditorPreview__";
+    private const string PREVIEW_NAME = "__UIEditorNewPreview__";
     private const string COMMON_PART_FOLDER = "${ASSET_PATHS.commonPart}/";
 
     static string ReadSyncJson()
     {
-        string json = UIEditorCorsProxy.LastSyncJson;
+        string json = UIEditorNewCorsProxy.LastSyncJson;
         if (string.IsNullOrEmpty(json))
         {
-            string filePath = Path.Combine(Application.dataPath, "Editor/uieditor_sync.json");
+            string filePath = Path.Combine(Application.dataPath, "Editor/UIEditorNew/uieditor_new_sync.json");
             if (File.Exists(filePath))
             {
                 json = File.ReadAllText(filePath);
@@ -191,7 +191,7 @@ public static class UIEditorBridgeSync
         }
         if (string.IsNullOrEmpty(json))
         {
-            Debug.LogError("[UIEditorBridge] 没有同步数据，请先在浏览器中点击同步");
+            Debug.LogError("[UIEditorNewBridge] 没有同步数据，请先在浏览器中点击同步");
             return null;
         }
         return json;
@@ -205,13 +205,13 @@ public static class UIEditorBridgeSync
         var doc = JsonUtility.FromJson<SyncDocument>(json);
         if (doc == null || doc.root == null)
         {
-            Debug.LogError("[UIEditorBridge] JSON 解析失败");
+            Debug.LogError("[UIEditorNewBridge] JSON 解析失败");
             return null;
         }
         return doc;
     }
 
-    [MenuItem("UIEditor/Bridge Sync")]
+    [MenuItem("UIEditorNew/Bridge Sync")]
     public static void SyncFromJson()
     {
         var doc = ReadSyncDocument();
@@ -243,12 +243,12 @@ public static class UIEditorBridgeSync
 
         ResolveScrollViewBindings();
 
-        Debug.Log("[UIEditorBridge] 同步完成: " + count + " 个节点");
+        Debug.Log("[UIEditorNewBridge] 同步完成: " + count + " 个节点");
         Selection.activeGameObject = canvasGo;
         SceneView.RepaintAll();
     }
 
-    [MenuItem("UIEditor/Bridge Sync Incremental")]
+    [MenuItem("UIEditorNew/Bridge Sync Incremental")]
     public static void SyncIncrementalFromJson()
     {
         var doc = ReadSyncDocument();
@@ -256,14 +256,14 @@ public static class UIEditorBridgeSync
 
         if (string.IsNullOrEmpty(doc.sourcePrefabPath))
         {
-            Debug.LogError("[UIEditorBridge] 缺少 sourcePrefabPath，无法写回原 prefab");
+            Debug.LogError("[UIEditorNewBridge] 缺少 sourcePrefabPath，无法写回原 prefab");
             return;
         }
 
         string prefabPath = NormalizePrefabPath(doc.sourcePrefabPath);
         if (!File.Exists(prefabPath.Replace("Assets/", Application.dataPath + "/")))
         {
-            Debug.LogError("[UIEditorBridge] 目标 prefab 不存在: " + prefabPath);
+            Debug.LogError("[UIEditorNewBridge] 目标 prefab 不存在: " + prefabPath);
             return;
         }
 
@@ -273,7 +273,7 @@ public static class UIEditorBridgeSync
             prefabRoot = PrefabUtility.LoadPrefabContents(prefabPath);
             if (prefabRoot == null)
             {
-                Debug.LogError("[UIEditorBridge] 无法加载 prefab: " + prefabPath);
+                Debug.LogError("[UIEditorNewBridge] 无法加载 prefab: " + prefabPath);
                 return;
             }
 
@@ -305,7 +305,7 @@ public static class UIEditorBridgeSync
             }
 
             PrefabUtility.SaveAsPrefabAsset(prefabRoot, prefabPath);
-            Debug.Log("[UIEditorBridge] 增量写回完成: " + prefabPath + ", 更新 " + changed + " 个节点, 跳过 " + skipped + " 个节点");
+            Debug.Log("[UIEditorNewBridge] 增量写回完成: " + prefabPath + ", 更新 " + changed + " 个节点, 跳过 " + skipped + " 个节点");
         }
         finally
         {
@@ -496,7 +496,7 @@ public static class UIEditorBridgeSync
         var gradientType = FindType("UnityEngine.UI.UIGradient", "UIGradient", "Coffee.UIEffects.UIGradient");
         if (gradientType == null)
         {
-            Debug.LogWarning("[UIEditorBridge] 当前工程未找到 UIGradient 类型，跳过渐变");
+            Debug.LogWarning("[UIEditorNewBridge] 当前工程未找到 UIGradient 类型，跳过渐变");
             return;
         }
 
@@ -538,7 +538,7 @@ public static class UIEditorBridgeSync
         var mirrorImageType = FindType("MirrorImage");
         if (mirrorImageType == null)
         {
-            Debug.LogWarning("[UIEditorBridge] 当前工程未找到 MirrorImage 类型，跳过镜像");
+            Debug.LogWarning("[UIEditorNewBridge] 当前工程未找到 MirrorImage 类型，跳过镜像");
             return;
         }
 
@@ -780,7 +780,7 @@ public static class UIEditorBridgeSync
             {
                 ApplyGradient(go, node.textGradient);
             }
-            catch (System.Exception ex) { Debug.LogWarning("[UIEditorBridge] UIGradient 失败: " + ex.Message); }
+            catch (System.Exception ex) { Debug.LogWarning("[UIEditorNewBridge] UIGradient 失败: " + ex.Message); }
         }
     }
 
@@ -1032,14 +1032,14 @@ public static class UIEditorBridgeSync
     [System.Serializable] public class SyncCSF { public bool _exists, enabled=true; public int horizontalFit, verticalFit; }
 
     // ===== 截图功能 =====
-    [MenuItem("UIEditor/Bridge Screenshot")]
+    [MenuItem("UIEditorNew/Bridge Screenshot")]
     public static void CaptureScreenshot()
     {
-        string screenshotPath = Path.Combine(Application.dataPath, "..", "Assets/Editor/uieditor_screenshot.png");
+        string screenshotPath = Path.Combine(Application.dataPath, "..", "Assets/Editor/UIEditorNew/uieditor_new_screenshot.png");
 
         // 确保预览 Canvas 存在
-        var canvas = GameObject.Find("__UIEditorPreview__");
-        if (canvas == null) { Debug.LogError("[UIEditorBridge] 预览 Canvas 不存在，请先同步"); return; }
+        var canvas = GameObject.Find("__UIEditorNewPreview__");
+        if (canvas == null) { Debug.LogError("[UIEditorNewBridge] 预览 Canvas 不存在，请先同步"); return; }
 
         // 强制刷新
         UnityEngine.Canvas.ForceUpdateCanvases();
@@ -1056,7 +1056,7 @@ public static class UIEditorBridgeSync
         EditorApplication.delayCall += () =>
         {
             ScreenCapture.CaptureScreenshot(screenshotPath, 1);
-            Debug.Log("[UIEditorBridge] 截图指令已发送: " + screenshotPath);
+            Debug.Log("[UIEditorNewBridge] 截图指令已发送: " + screenshotPath);
 
             // 再延迟等文件写完
             EditorApplication.delayCall += () =>
@@ -1064,9 +1064,9 @@ public static class UIEditorBridgeSync
                 EditorApplication.delayCall += () =>
                 {
                     if (File.Exists(screenshotPath))
-                        Debug.Log("[UIEditorBridge] 截图完成 (" + new FileInfo(screenshotPath).Length / 1024 + "KB)");
+                        Debug.Log("[UIEditorNewBridge] 截图完成 (" + new FileInfo(screenshotPath).Length / 1024 + "KB)");
                     else
-                        Debug.LogWarning("[UIEditorBridge] 截图文件未生成，可能需要在 Play 模式下截图");
+                        Debug.LogWarning("[UIEditorNewBridge] 截图文件未生成，可能需要在 Play 模式下截图");
                 };
             };
         };
@@ -1093,14 +1093,14 @@ using System.Threading;
 /// <summary>
 /// HTTPS CORS 代理 — 让部署在远程 HTTPS 服务器上的编辑器跨域访问本地 MCP 服务
 /// 使用 TcpListener + SslStream 提供 HTTPS，无需管理员权限
-/// 监听 8081 端口，转发请求到 MCP 的 8080 端口并添加 CORS 头
+/// 监听 8082 端口，转发请求到 MCP 的 8080 端口并添加 CORS 头
 /// Unity Editor 启动时自动运行
-/// 首次使用需在浏览器中访问 https://127.0.0.1:8081 并接受自签名证书
+/// 首次使用需在浏览器中访问 https://127.0.0.1:8082 并接受自签名证书
 /// </summary>
 [InitializeOnLoad]
-public static class UIEditorCorsProxy
+public static class UIEditorNewCorsProxy
 {
-    private const int PROXY_PORT = 8081;
+    private const int PROXY_PORT = 8082;
     private const string MCP_TARGET = "http://127.0.0.1:8080";
     private const string PFX_PASSWORD = "uieditor";
 
@@ -1118,7 +1118,7 @@ public static class UIEditorCorsProxy
     private static readonly object PendingLock = new object();
     private static readonly Queue<PendingSync> PendingSyncs = new Queue<PendingSync>();
 
-    static UIEditorCorsProxy()
+    static UIEditorNewCorsProxy()
     {
         _mainContext = SynchronizationContext.Current;
         EditorApplication.update += ProcessPendingSyncs;
@@ -1140,15 +1140,15 @@ public static class UIEditorCorsProxy
             _listener.Start();
             _running = true;
 
-            _thread = new Thread(AcceptLoop) { IsBackground = true, Name = "UIEditorCorsProxy" };
+            _thread = new Thread(AcceptLoop) { IsBackground = true, Name = "UIEditorNewCorsProxy" };
             _thread.Start();
 
-            Debug.Log($"[UIEditorCorsProxy] HTTPS CORS 代理已启动: https://127.0.0.1:{PROXY_PORT} -> {MCP_TARGET}");
-            Debug.Log($"[UIEditorCorsProxy] 首次使用请在浏览器中访问 https://127.0.0.1:{PROXY_PORT} 并信任证书");
+            Debug.Log($"[UIEditorNewCorsProxy] HTTPS CORS 代理已启动: https://127.0.0.1:{PROXY_PORT} -> {MCP_TARGET}");
+            Debug.Log($"[UIEditorNewCorsProxy] 首次使用请在浏览器中访问 https://127.0.0.1:{PROXY_PORT} 并信任证书");
         }
         catch (Exception ex)
         {
-            Debug.LogWarning($"[UIEditorCorsProxy] 启动失败: {ex.Message}");
+            Debug.LogWarning($"[UIEditorNewCorsProxy] 启动失败: {ex.Message}");
         }
     }
 
@@ -1233,7 +1233,7 @@ public static class UIEditorCorsProxy
             if (method == "GET" && (path == "/" || path == ""))
             {
                 string html = "<html><body style='font-family:sans-serif;text-align:center;padding:60px'>" +
-                    "<h2>LOA UIEditor CORS Proxy</h2>" +
+                    "<h2>UIEditor_new CORS Proxy</h2>" +
                     "<p style='color:green;font-size:18px'>HTTPS 代理运行中，证书已信任！</p>" +
                     "<p>现在可以关闭此页面，回到编辑器使用。</p></body></html>";
                 byte[] htmlBytes = Encoding.UTF8.GetBytes(html);
@@ -1251,7 +1251,7 @@ public static class UIEditorCorsProxy
                 string json = body != null && body.Length > 0 ? Encoding.UTF8.GetString(body) : "";
                 if (body != null && body.Length > 0)
                 {
-                    Debug.Log($"[UIEditorCorsProxy] 收到同步数据: {body.Length} bytes");
+                    Debug.Log($"[UIEditorNewCorsProxy] 收到同步数据: {body.Length} bytes");
                 }
                 if (path == "/sync")
                 {
@@ -1487,11 +1487,11 @@ public static class UIEditorCorsProxy
             LastSyncJson = sync.Json;
             if (sync.Path == "/sync-preview")
             {
-                UIEditorBridgeSync.SyncFromJson();
+                UIEditorNewBridgeSync.SyncFromJson();
             }
             else if (sync.Path == "/sync-incremental")
             {
-                UIEditorBridgeSync.SyncIncrementalFromJson();
+                UIEditorNewBridgeSync.SyncIncrementalFromJson();
             }
         }
     }
