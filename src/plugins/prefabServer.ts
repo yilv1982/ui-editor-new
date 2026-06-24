@@ -4,6 +4,7 @@ import path from 'path';
 import { PROJECT_ROOT, ASSET_PATHS, DESIGN_WIDTH, DESIGN_HEIGHT } from '../config/unityPaths';
 
 const UI_PREFAB_ROOT = PROJECT_ROOT + '/' + ASSET_PATHS.prefab;
+const LEGACY_PREFAB_ROOTS = ASSET_PATHS.legacyPrefabs ?? [];
 const ATLAS_ROOT = PROJECT_ROOT + '/' + ASSET_PATHS.atlas;
 const TEXTURE_ROOT = PROJECT_ROOT + '/' + ASSET_PATHS.texture;
 const COMMON_PART_DIR = PROJECT_ROOT + '/' + ASSET_PATHS.commonPart;
@@ -2756,6 +2757,22 @@ export function prefabServerPlugin(): Plugin {
         return results;
       }
 
+      function scanLegacyPrefabFiles(assetRoot: string): { name: string; file: string; category: string; relPath: string }[] {
+        const normalizedRoot = assetRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+        const diskRoot = `${PROJECT_ROOT}/${normalizedRoot}`;
+        return scanPrefabFiles(diskRoot).map((item) => ({
+          ...item,
+          category: `${normalizedRoot.replace(/^Assets\//, '')}/${item.category}`,
+          relPath: `${normalizedRoot}/${item.relPath}`.replace(/\\/g, '/'),
+        }));
+      }
+
+      function resolvePrefabDiskPath(relPath: string): string {
+        const normalized = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
+        if (normalized.startsWith('Assets/')) return path.join(PROJECT_ROOT, normalized);
+        return path.join(UI_PREFAB_ROOT, normalized);
+      }
+
       // 扫描每个 category 下的 textures 目录
       function scanCategoryTextures(): Record<string, { name: string; url: string }[]> {
         const result: Record<string, { name: string; url: string }[]> = {};
@@ -2835,7 +2852,10 @@ export function prefabServerPlugin(): Plugin {
       // GET /api/prefabs/list — 返回所有 UI 预制体列表（按目录分类，排除 CommonPart）
       server.middlewares.use('/api/prefabs/list', (_req, res) => {
         try {
-          const files = scanPrefabFiles(UI_PREFAB_ROOT);
+          const files = [
+            ...scanPrefabFiles(UI_PREFAB_ROOT),
+            ...LEGACY_PREFAB_ROOTS.flatMap((assetRoot) => scanLegacyPrefabFiles(assetRoot)),
+          ].sort((a, b) => a.relPath.localeCompare(b.relPath));
           const textures = scanCategoryTextures();
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ prefabs: files, textures }));
@@ -2866,12 +2886,15 @@ export function prefabServerPlugin(): Plugin {
           // 优先用 relPath（含子目录），fallback 按 name 搜索
           let prefabPath = '';
           if (relPath) {
-            prefabPath = path.join(UI_PREFAB_ROOT, relPath);
+            prefabPath = resolvePrefabDiskPath(relPath);
           } else if (name) {
             // 向下兼容：在所有子目录中查找
-            const allFiles = scanPrefabFiles(UI_PREFAB_ROOT);
+            const allFiles = [
+              ...scanPrefabFiles(UI_PREFAB_ROOT),
+              ...LEGACY_PREFAB_ROOTS.flatMap((assetRoot) => scanLegacyPrefabFiles(assetRoot)),
+            ];
             const found = allFiles.find((f) => f.name === name);
-            if (found) prefabPath = path.join(UI_PREFAB_ROOT, found.relPath);
+            if (found) prefabPath = resolvePrefabDiskPath(found.relPath);
           }
 
           if (!prefabPath || !fs.existsSync(prefabPath)) {
@@ -2929,7 +2952,7 @@ export function prefabServerPlugin(): Plugin {
       }
       function isPrefabNewer(relPath: string, thumbPath: string): boolean {
         try {
-          const prefabMtime = fs.statSync(path.join(UI_PREFAB_ROOT, relPath)).mtimeMs;
+          const prefabMtime = fs.statSync(resolvePrefabDiskPath(relPath)).mtimeMs;
           const thumbMtime = fs.statSync(thumbPath).mtimeMs;
           return prefabMtime > thumbMtime;
         } catch { return true; }

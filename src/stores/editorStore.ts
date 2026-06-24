@@ -14,7 +14,6 @@ import {
 } from '../config/assetPaths';
 import { measureTextHeight } from '../utils/measureText';
 import { migratePages } from '../utils/migratePage';
-import { adaptNodeCoords } from '../utils/anchorAdapt';
 
 /** 若节点为 text 且开启了 verticalFit=PreferredSize，按文本/字号/宽度重算 height。 */
 function autoFitTextHeight(node: UINode): UINode {
@@ -42,6 +41,12 @@ interface HistoryEntry {
 
 const PREVIEW_RESOLUTION_STORAGE_KEY = 'uieditor_preview_resolution';
 const PREVIEW_RESOLUTION_STORAGE_VERSION = 3;
+const BRIDGE_WORKSPACE_STORAGE_KEY = 'uieditor_new_bridge_workspace_v1';
+const BRIDGE_WORKSPACE_STORAGE_VERSION = 1;
+
+function snapCanvasPixel(value: number): number {
+  return Number.isFinite(value) ? Math.round(value) : 0;
+}
 
 function readPreviewResolutionPreference(): { width: number; height: number } {
   const defaults = { width: DEFAULT_PREVIEW_WIDTH, height: DEFAULT_PREVIEW_HEIGHT };
@@ -81,46 +86,161 @@ function persistPreviewResolutionPreference(width: number, height: number) {
 
 const initialPreviewResolution = readPreviewResolutionPreference();
 
-function roundLayoutValue(value: number): number {
-  return Math.round(value * 10000) / 10000;
+type BridgeWorkspaceSnapshot = {
+  version: number;
+  activePageId?: string;
+  activeArtboardId?: string;
+  previewWidth?: number;
+  previewHeight?: number;
+  pages?: Array<{
+    id?: string;
+    name?: string;
+    activeArtboardId?: string;
+    annotations?: Record<string, AnnotationNode>;
+    annotationRootIds?: string[];
+    artboards?: Array<{
+      id?: string;
+      name?: string;
+      x?: number;
+      y?: number;
+      width?: number;
+      height?: number;
+      sourcePrefabPath?: string | null;
+      bridgeWorkingPrefabPath?: string | null;
+      bridgeTargetPrefabPath?: string | null;
+      bridgeDirty?: boolean;
+      sidebar?: Artboard['sidebar'];
+      sidebarEnabled?: boolean;
+    }>;
+  }>;
+};
+
+function sanitizeNumber(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
-function adaptNodesForPreviewResolution(
-  nodes: Record<string, UINode>,
-  rootIds: string[],
-  oldWidth: number,
-  oldHeight: number,
-  newWidth: number,
-  newHeight: number,
-): Record<string, UINode> {
-  if (oldWidth === newWidth && oldHeight === newHeight) return nodes;
+function sanitizeString(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() ? value : fallback;
+}
 
-  const nextNodes: Record<string, UINode> = { ...nodes };
+function readBridgeWorkspaceSnapshot(defaultWidth: number, defaultHeight: number): {
+  pages: PageData[];
+  activePageId: string;
+  activeArtboardId: string;
+} | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(BRIDGE_WORKSPACE_STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as BridgeWorkspaceSnapshot;
+    if (!data || data.version !== BRIDGE_WORKSPACE_STORAGE_VERSION || !Array.isArray(data.pages)) return null;
 
-  function adaptSubtree(nodeId: string, oldParentW: number, oldParentH: number, newParentW: number, newParentH: number) {
-    const node = nodes[nodeId];
-    if (!node) return;
-
-    const adapted = adaptNodeCoords(node, oldParentW, oldParentH, newParentW, newParentH);
-    const nextNode: UINode = {
-      ...node,
-      x: roundLayoutValue(adapted.x),
-      y: roundLayoutValue(adapted.y),
-      width: Math.max(1, roundLayoutValue(adapted.width)),
-      height: Math.max(1, roundLayoutValue(adapted.height)),
+    const pages = data.pages.flatMap((pageLike, pageIndex): PageData[] => {
+      const artboards = (pageLike.artboards ?? []).flatMap((artboardLike, artboardIndex): Artboard[] => {
+        const workingPath = typeof artboardLike.bridgeWorkingPrefabPath === 'string' ? artboardLike.bridgeWorkingPrefabPath : undefined;
+        const sourcePath = typeof artboardLike.sourcePrefabPath === 'string' ? artboardLike.sourcePrefabPath : null;
+        if (!workingPath && !sourcePath) return [];
+        const id = sanitizeString(artboardLike.id, uuid());
+        return [{
+          id,
+          name: sanitizeString(artboardLike.name, `画板 ${artboardIndex + 1}`),
+          x: sanitizeNumber(artboardLike.x, 0),
+          y: sanitizeNumber(artboardLike.y, artboardIndex * (defaultHeight + 200)),
+          width: sanitizeNumber(artboardLike.width, defaultWidth),
+          height: sanitizeNumber(artboardLike.height, defaultHeight),
+          nodes: {},
+          rootIds: [],
+          sourcePrefabPath: sourcePath,
+          bridgeWorkingPrefabPath: workingPath,
+          bridgeTargetPrefabPath: typeof artboardLike.bridgeTargetPrefabPath === 'string' ? artboardLike.bridgeTargetPrefabPath : undefined,
+          bridgeDirty: !!artboardLike.bridgeDirty,
+          bridgeStatus: workingPath ? '正在恢复画板...' : undefined,
+          sidebar: artboardLike.sidebar,
+          sidebarEnabled: artboardLike.sidebarEnabled,
+        }];
+      });
+      if (artboards.length === 0) return [];
+      const activeArtboardId = artboards.some((item) => item.id === pageLike.activeArtboardId)
+        ? pageLike.activeArtboardId!
+        : artboards[0].id;
+      return [{
+        id: sanitizeString(pageLike.id, uuid()),
+        name: sanitizeString(pageLike.name, `图层 ${pageIndex + 1}`),
+        artboards,
+        activeArtboardId,
+        annotations: pageLike.annotations ?? {},
+        annotationRootIds: Array.isArray(pageLike.annotationRootIds) ? pageLike.annotationRootIds : [],
+      }];
+    });
+    if (pages.length === 0) return null;
+    const activePage = pages.find((page) => page.id === data.activePageId) ?? pages[0];
+    const activeArtboard = activePage.artboards.find((artboard) => artboard.id === data.activeArtboardId)
+      ?? activePage.artboards.find((artboard) => artboard.id === activePage.activeArtboardId)
+      ?? activePage.artboards[0];
+    return {
+      pages,
+      activePageId: activePage.id,
+      activeArtboardId: activeArtboard.id,
     };
-    nextNodes[nodeId] = nextNode;
+  } catch {
+    return null;
+  }
+}
 
-    for (const childId of node.children) {
-      adaptSubtree(childId, node.width, node.height, nextNode.width, nextNode.height);
+function writeBridgeWorkspaceSnapshot(state: EditorState) {
+  if (typeof window === 'undefined') return;
+  try {
+    const pages = flushAnnotationsToPage(
+      flushMirrorToArtboard(state.pages, state.activePageId, state.activeArtboardId, {
+        nodes: state.nodes,
+        rootIds: state.rootIds,
+        sourcePrefabPath: state.sourcePrefabPath,
+      }),
+      state.activePageId,
+      state.annotations,
+      state.annotationRootIds,
+    ).map((page) => ({
+      id: page.id,
+      name: page.name,
+      activeArtboardId: page.activeArtboardId,
+      annotations: page.annotations ?? {},
+      annotationRootIds: page.annotationRootIds ?? [],
+      artboards: page.artboards
+        .filter((artboard) => !!artboard.bridgeWorkingPrefabPath || !!artboard.sourcePrefabPath)
+        .map((artboard) => ({
+          id: artboard.id,
+          name: artboard.name,
+          x: artboard.x,
+          y: artboard.y,
+          width: artboard.width,
+          height: artboard.height,
+          sourcePrefabPath: artboard.sourcePrefabPath,
+          bridgeWorkingPrefabPath: artboard.bridgeWorkingPrefabPath,
+          bridgeTargetPrefabPath: artboard.bridgeTargetPrefabPath,
+          bridgeDirty: !!artboard.bridgeDirty,
+          sidebar: artboard.sidebar,
+          sidebarEnabled: artboard.sidebarEnabled,
+        })),
+    })).filter((page) => page.artboards.length > 0);
+
+    if (pages.length === 0) {
+      window.localStorage.removeItem(BRIDGE_WORKSPACE_STORAGE_KEY);
+      return;
     }
-  }
 
-  for (const rootId of rootIds) {
-    adaptSubtree(rootId, oldWidth, oldHeight, newWidth, newHeight);
+    window.localStorage.setItem(BRIDGE_WORKSPACE_STORAGE_KEY, JSON.stringify({
+      version: BRIDGE_WORKSPACE_STORAGE_VERSION,
+      activePageId: state.activePageId,
+      activeArtboardId: state.activeArtboardId,
+      previewWidth: state.previewWidth,
+      previewHeight: state.previewHeight,
+      savedAt: new Date().toISOString(),
+      pages,
+    }));
+  } catch {
+    // Keep Bridge editing usable when browser persistence is unavailable.
   }
-
-  return nextNodes;
 }
 
 interface EditorState {
@@ -352,6 +472,7 @@ function withAnnotationMirror(
 
 export const useEditorStore = create<EditorState>((set, get) => {
   let hintTimer: number | null = null;
+  const restoredBridgeWorkspace = readBridgeWorkspaceSnapshot(initialPreviewResolution.width, initialPreviewResolution.height);
   const defaultArtboard: Artboard = {
     id: defaultArtboardId,
     name: '画板 1',
@@ -369,12 +490,18 @@ export const useEditorStore = create<EditorState>((set, get) => {
     artboards: [defaultArtboard],
     activeArtboardId: defaultArtboardId,
   };
+  const initialPages = restoredBridgeWorkspace?.pages ?? [defaultPage];
+  const initialActivePageId = restoredBridgeWorkspace?.activePageId ?? defaultPageId;
+  const initialActiveArtboardId = restoredBridgeWorkspace?.activeArtboardId ?? defaultArtboardId;
+  const initialActivePage = initialPages.find((page) => page.id === initialActivePageId) ?? initialPages[0];
+  const initialActiveArtboard = initialActivePage.artboards.find((artboard) => artboard.id === initialActiveArtboardId)
+    ?? initialActivePage.artboards[0];
   return ({
-  pages: [defaultPage],
-  activePageId: defaultPageId,
-  activeArtboardId: defaultArtboardId,
-  nodes: {},
-  rootIds: [],
+  pages: initialPages,
+  activePageId: initialActivePage.id,
+  activeArtboardId: initialActiveArtboard.id,
+  nodes: { ...initialActiveArtboard.nodes },
+  rootIds: [...initialActiveArtboard.rootIds],
   selectedIds: [],
   selectedArtboardId: null,
   hoveredId: null,
@@ -383,7 +510,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
   prefabListReloadCounter: 0,
   editingTextId: null,
   locateImagePath: null,
-  sourcePrefabPath: null,
+  sourcePrefabPath: initialActiveArtboard.sourcePrefabPath,
   canvasX: 0,
   canvasY: 0,
   canvasScale: 1,
@@ -396,8 +523,8 @@ export const useEditorStore = create<EditorState>((set, get) => {
   tool: 'select',
   sceneTool: 'rect',
   rulersVisible: true,
-  annotations: {},
-  annotationRootIds: [],
+  annotations: { ...(initialActivePage.annotations ?? {}) },
+  annotationRootIds: [...(initialActivePage.annotationRootIds ?? [])],
   selectedAnnotationIds: [],
   annotationLayerVisible: true,
   grayscaleMode: false,
@@ -788,7 +915,11 @@ export const useEditorStore = create<EditorState>((set, get) => {
   toggleRulers: () => set((s) => ({ rulersVisible: !s.rulersVisible })),
 
   setCanvasTransform: (x, y, scale) =>
-    set({ canvasX: x, canvasY: y, canvasScale: Math.max(0.1, Math.min(5, scale)) }),
+    set({
+      canvasX: snapCanvasPixel(x),
+      canvasY: snapCanvasPixel(y),
+      canvasScale: Math.max(0.1, Math.min(5, scale)),
+    }),
 
   setPreviewResolution: (w, h) => {
     persistPreviewResolutionPreference(w, h);
@@ -829,7 +960,6 @@ export const useEditorStore = create<EditorState>((set, get) => {
           ...artboard,
           width: w,
           height: h,
-          nodes: adaptNodesForPreviewResolution(artboard.nodes, artboard.rootIds, oldW, oldH, w, h),
         })),
       }));
       const activePage = nextPages.find((page) => page.id === s.activePageId);
@@ -1658,3 +1788,14 @@ export const useEditorStore = create<EditorState>((set, get) => {
     fetch(`/api/save/${encodeURIComponent(slotName)}`, { method: 'DELETE' }).catch(() => {});
   },
 }); });
+
+if (typeof window !== 'undefined') {
+  let bridgeWorkspacePersistTimer: number | null = null;
+  useEditorStore.subscribe(() => {
+    if (bridgeWorkspacePersistTimer !== null) window.clearTimeout(bridgeWorkspacePersistTimer);
+    bridgeWorkspacePersistTimer = window.setTimeout(() => {
+      bridgeWorkspacePersistTimer = null;
+      writeBridgeWorkspaceSnapshot(useEditorStore.getState());
+    }, 100);
+  });
+}

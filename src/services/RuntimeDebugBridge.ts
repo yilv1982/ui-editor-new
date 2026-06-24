@@ -4,7 +4,7 @@ import { exportPageForUnity } from '../utils/exportJson';
 import { fetchPrefabTemplate, importPrefabTemplateNode } from '../utils/importPrefabTemplate';
 import { fullSync } from './StoreSync';
 import unityBridge from './UnityBridge';
-import { createWidgetNodeOnBridge } from './BridgeArtboardStore';
+import { createWidgetNodeOnBridge, openPrefabInActiveArtboard } from './BridgeArtboardStore';
 import type { NodeBounds } from './UnityBridge';
 import { DESIGN_WIDTH, DESIGN_HEIGHT } from '../config/assetPaths';
 import { captureLayerWholeShot } from '../utils/ueExport/common';
@@ -133,6 +133,7 @@ interface RuntimeDebugApi {
   visualProbe: (idOrName?: string, args?: Record<string, unknown>) => Promise<unknown>;
   focusTargetInViewport: (idOrName?: string, args?: Record<string, unknown>) => unknown;
   importPrefab: (relPath: string, args?: Record<string, unknown>) => Promise<unknown>;
+  openBridgePrefab: (prefabPath: string) => Promise<unknown>;
   clear: () => unknown;
   select: (idOrName: string) => unknown;
   node: (idOrName: string) => unknown;
@@ -1467,6 +1468,17 @@ async function importPrefab(relPath: string, args: Record<string, unknown> = {})
   };
 }
 
+async function openBridgePrefab(prefabPath: string) {
+  await openPrefabInActiveArtboard(prefabPath);
+  await waitFrames(3);
+  await waitMs(250);
+  return {
+    bridge: getBridgeBboxes(),
+    snapshot: getSnapshot(),
+    analysis: analyzeRuntime(),
+  };
+}
+
 function clearRuntime() {
   useEditorStore.getState().clearAll();
   fullSync();
@@ -1971,6 +1983,7 @@ if (enabled) {
     visualProbe,
     focusTargetInViewport,
     importPrefab,
+    openBridgePrefab,
     clear: clearRuntime,
     select: selectNode,
     node: getDebugNode,

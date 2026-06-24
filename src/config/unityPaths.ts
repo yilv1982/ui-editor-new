@@ -29,8 +29,8 @@ interface UnityConfig {
 }
 
 const DEFAULTS: UnityConfig = {
-  mcpUrl: 'https://127.0.0.1:8082/mcp',
-  editorBridgeUrl: 'http://127.0.0.1:8082',
+  mcpUrl: 'https://127.0.0.1:18082/mcp',
+  editorBridgeUrl: 'http://127.0.0.1:18082',
 };
 
 let _config: UnityConfig = { ...DEFAULTS };

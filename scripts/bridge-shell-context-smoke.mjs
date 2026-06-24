@@ -12,7 +12,7 @@ const ROOT = path.resolve(__dirname, '..');
 function parseArgs(argv) {
   const args = {
     url: 'http://127.0.0.1:4105/',
-    bridgeUrl: 'http://127.0.0.1:8082',
+    bridgeUrl: 'http://127.0.0.1:18082',
     out: path.join(ROOT, '.cache', 'bridge-shell-context-smoke', 'latest'),
     viewportWidth: 1400,
     viewportHeight: 900,
@@ -286,6 +286,7 @@ async function main() {
           window.confirm = () => true;
           window.alert = (message) => { window.__uieditorShellSmokeAlert = String(message); };
           localStorage.removeItem('uieditor_new_remote_artboards_v1');
+          localStorage.removeItem('uieditor_new_bridge_workspace_v1');
           localStorage.removeItem('uieditor_save__autosave');
         } catch {}
       `,
@@ -696,68 +697,26 @@ async function main() {
       const sourceEl = document.querySelector('[data-testid="layer-artboard-row"][data-active="true"]');
       await openContext(sourceEl);
       const duplicateArtboardButton = document.querySelector('[data-testid="layer-artboard-duplicate"]');
-      if (!duplicateArtboardButton) throw new Error('duplicate artboard button is missing');
-      duplicateArtboardButton.click();
-      const duplicatedArtboard = await waitUntil(() => {
-        const nextRows = rows();
-        if (nextRows.length <= initialRows.length) return null;
-        const next = nextRows.find((row) => row.active && row.workingPath && row.workingPath !== sourceRow.workingPath);
-        return next || null;
-      });
+      if (duplicateArtboardButton) throw new Error('duplicate artboard button should be removed');
+      document.body.click();
+
       const marqueeSelection = await runMarqueeSmoke();
       const annotationExport = await runAnnotationExportSmoke(marqueeSelection);
       const transformGesture = await runTransformGestureSmoke();
 
-      const rowsAfterArtboardDuplicate = rows();
       const pageBeforeDuplicate = activePage();
-      const pagesBeforeDuplicate = pages();
       const pageEl = document.querySelector('[data-testid="layer-page-tab"][data-active="true"] button')
         || document.querySelector('[data-testid="layer-page-tab"][data-active="true"]');
       await openContext(pageEl);
       const duplicatePageButton = document.querySelector('[data-testid="layer-page-duplicate"]');
-      if (!duplicatePageButton) throw new Error('duplicate page button is missing');
-      duplicatePageButton.click();
-      const duplicatedPage = await waitUntil(() => {
-        const nextPages = pages();
-        if (nextPages.length <= pagesBeforeDuplicate.length) return null;
-        const page = nextPages.find((item) => item.active);
-        const nextRows = rows();
-        const rowPaths = nextRows.map((row) => row.workingPath).filter(Boolean);
-        if (!page || rowPaths.length === 0) return null;
-        const hasFreshTemp = rowPaths.some((item) => item !== sourceRow.workingPath && item !== duplicatedArtboard.workingPath);
-        return hasFreshTemp ? { ...page, rowPaths } : null;
-      });
-
-      const duplicatePagePaths = duplicatedPage.rowPaths;
-      const pageCountAfterDuplicate = pages().length;
-      const activePageEl = document.querySelector('[data-testid="layer-page-tab"][data-active="true"] button')
-        || document.querySelector('[data-testid="layer-page-tab"][data-active="true"]');
-      await openContext(activePageEl);
-      const deletePageButton = document.querySelector('[data-testid="layer-page-delete"]');
-      if (!deletePageButton) throw new Error('delete page button is missing after duplicate page');
-      deletePageButton.click();
-      await waitUntil(() => pages().length < pageCountAfterDuplicate);
-
-      const duplicatedRowEl = [...document.querySelectorAll('[data-testid="layer-artboard-row"]')]
-        .find((row) => row.dataset.workingPrefabPath === duplicatedArtboard.workingPath);
-      if (duplicatedRowEl) {
-        const countBeforeDelete = rows().length;
-        await openContext(duplicatedRowEl);
-        const deleteArtboardButton = document.querySelector('[data-testid="layer-artboard-delete"]');
-        if (!deleteArtboardButton) throw new Error('delete artboard button is missing after duplicate artboard');
-        deleteArtboardButton.click();
-        await waitUntil(() => rows().length < countBeforeDelete);
-      }
+      if (duplicatePageButton) throw new Error('duplicate page button should be removed');
+      document.body.click();
 
       return {
         initialRows,
         initialPages,
         sourceRow,
-        duplicatedArtboard,
-        rowsAfterArtboardDuplicate,
         pageBeforeDuplicate,
-        duplicatedPage,
-        duplicatePagePaths,
         marqueeSelection,
         annotationExport,
         transformGesture,
@@ -767,10 +726,7 @@ async function main() {
     })()`, 180000);
 
     report.result = result;
-    const tempPaths = [
-      result.duplicatedArtboard?.workingPath,
-      ...(result.duplicatePagePaths || []),
-    ].filter(Boolean);
+    const tempPaths = [];
     report.tempCleanup = tempPaths.map((assetPath) => ({
       assetPath,
       exists: projectAssetExists(bridgeHealth.projectPath, assetPath),
@@ -786,8 +742,6 @@ async function main() {
     await writeFile(path.join(args.out, 'report.json'), JSON.stringify(report, null, 2), 'utf8');
     console.log(JSON.stringify({
       ok: true,
-      duplicatedArtboardPath: result.duplicatedArtboard.workingPath,
-      duplicatedPagePathCount: result.duplicatePagePaths.length,
       cleanupChecked: report.tempCleanup.length,
       reportPath: path.join(args.out, 'report.json'),
       screenshotPath: report.screenshotPath,

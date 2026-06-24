@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from 'react';
 import Toolbar from './components/Panels/Toolbar';
 import ComponentLibrary from './components/Panels/ComponentLibrary';
 import AtlasLibrary from './components/Panels/AtlasLibrary';
 import TemplateLibrary from './components/Panels/TemplateLibrary';
 import JenkinsSyncButton from './components/Panels/JenkinsSyncButton';
-import UnityCanvas from './components/Canvas/BridgeSnapshotCanvas';
+import BridgeMainCanvas from './components/Canvas/BridgeMainCanvas';
 import PropertyPanel from './components/Panels/PropertyPanel';
 import LayerPanel from './components/Panels/LayerPanel';
 import ShortcutsDialog from './components/Panels/ShortcutsDialog';
@@ -13,7 +13,7 @@ import { widgetDefs } from './data/componentDefs';
 import {
   createWidgetNodeOnBridge,
   copyNodesToActiveBridgeSession,
-  deleteNodeOnBridge,
+  deleteNodesOnBridge,
   deleteNodesFromBridgeSession,
   duplicateNodesOnBridge,
   groupNodesOnBridge,
@@ -196,6 +196,15 @@ function deepDuplicateNode(
 
 let bridgeClipboard: { sessionId: string; nodeIds: string[]; mode: 'copy' | 'cut' } | null = null;
 
+function clampWidth(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function readPanelWidth(key: string, fallback: number, min: number, max: number): number {
+  const saved = Number(localStorage.getItem(key));
+  return Number.isFinite(saved) ? clampWidth(saved, min, max) : fallback;
+}
+
 /** Ctrl+C — 只记录当前 Bridge session 内可安全复制的节点。 */
 function copySelected() {
   const { selectedIds, nodes } = useEditorStore.getState();
@@ -217,7 +226,7 @@ async function pasteNodes() {
   }
   if (clip.mode === 'cut') {
     if (clip.sessionId === sessionId) {
-      for (const nodeId of clip.nodeIds) await deleteNodeOnBridge(nodeId);
+      await deleteNodesOnBridge(clip.nodeIds);
     } else {
       await deleteNodesFromBridgeSession(clip.sessionId, clip.nodeIds);
     }
@@ -239,14 +248,19 @@ export default function App() {
   const appRef = useRef<HTMLDivElement>(null);
   const [appWidth, setAppWidth] = useState<number>(() => window.innerWidth || 0);
   const [leftTab, setLeftTab] = useState<'components' | 'atlas' | 'templates'>('components');
+  const [assetPanelWidth, setAssetPanelWidth] = useState<number>(() => readPanelWidth('assetPanelWidth', 272, 220, 460));
   // 图层面板宽度(可拖拽);持久化到 localStorage
-  const [layerPanelWidth, setLayerPanelWidth] = useState<number>(() => {
-    const saved = Number(localStorage.getItem('layerPanelWidth'));
-    return Number.isFinite(saved) && saved >= 200 && saved <= 800 ? saved : 288;
-  });
+  const [layerPanelWidth, setLayerPanelWidth] = useState<number>(() => readPanelWidth('layerPanelWidth', 288, 220, 560));
+  const [propertyPanelWidth, setPropertyPanelWidth] = useState<number>(() => readPanelWidth('propertyPanelWidth', 336, 280, 560));
+  useEffect(() => {
+    localStorage.setItem('assetPanelWidth', String(assetPanelWidth));
+  }, [assetPanelWidth]);
   useEffect(() => {
     localStorage.setItem('layerPanelWidth', String(layerPanelWidth));
   }, [layerPanelWidth]);
+  useEffect(() => {
+    localStorage.setItem('propertyPanelWidth', String(propertyPanelWidth));
+  }, [propertyPanelWidth]);
   // 图层面板折叠（Ctrl+B 切换）。折叠时记住上次宽度便于恢复
   const [layerPanelCollapsed, setLayerPanelCollapsed] = useState<boolean>(false);
   const lastLayerPanelWidthRef = useRef<number>(layerPanelWidth);
@@ -272,8 +286,36 @@ export default function App() {
   const narrowPanelLayout = appWidth > 0 && appWidth < 1280;
   const showLayerPanel = panelsVisible && !layerPanelCollapsed && !narrowPanelLayout;
   const showPropertyPanel = panelsVisible && !compactLayout;
-  const leftPanelClass = narrowPanelLayout ? 'w-56' : 'w-64';
-  const effectiveLayerPanelWidth = compactLayout ? Math.min(layerPanelWidth, 224) : layerPanelWidth;
+  const effectiveAssetPanelWidth = narrowPanelLayout ? Math.min(assetPanelWidth, 240) : assetPanelWidth;
+  const effectiveLayerPanelWidth = compactLayout ? Math.min(layerPanelWidth, 240) : layerPanelWidth;
+
+  const beginPanelResize = (
+    event: ReactPointerEvent,
+    startWidth: number,
+    setWidth: Dispatch<SetStateAction<number>>,
+    min: number,
+    max: number,
+    direction: 1 | -1,
+  ) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+    const onMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX;
+      setWidth(clampWidth(startWidth + dx * direction, min, max));
+    };
+    const onUp = () => {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  const resizeHandleClass = 'panel-resize-handle';
 
   useEffect(() => {
     if (locateImagePath) setLeftTab('atlas');
@@ -376,7 +418,7 @@ export default function App() {
             case 's': case 'S':
               if (inInput) return;
               e.preventDefault();
-              window.dispatchEvent(new Event('uieditor:save'));
+              window.dispatchEvent(new Event('uieditor:save-as'));
               return;
             case 'h': case 'H':
               if (inInput) return;
@@ -534,11 +576,7 @@ export default function App() {
           state.selectedAnnotationIds.forEach((id) => state.deleteAnnotation(id));
           return;
         }
-        void (async () => {
-          for (const id of editableNodeIds([...state.selectedIds], state.nodes)) {
-            await deleteNodeOnBridge(id);
-          }
-        })();
+        void deleteNodesOnBridge(editableNodeIds([...state.selectedIds], state.nodes));
         return;
       }
 
@@ -655,7 +693,10 @@ export default function App() {
       <div className="flex-1 flex overflow-hidden">
         {/* 左侧：组件库 / 图片资源 Tab 切换 */}
         {panelsVisible && (
-        <div className={`${leftPanelClass} shrink-0 flex flex-col overflow-hidden bg-[#1e1e2e] border-r border-[#313244]`}>
+        <div
+          className="shrink-0 flex flex-col overflow-hidden bg-[#1e1e2e] border-r border-[#313244]"
+          style={{ width: effectiveAssetPanelWidth }}
+        >
           <div className="flex shrink-0 border-b border-[#313244]">
             <button
               onClick={() => setLeftTab('components')}
@@ -697,33 +738,19 @@ export default function App() {
           </div>
         </div>
         )}
+        {panelsVisible && (
+          <div
+            className={resizeHandleClass}
+            title="拖动调整资源栏宽度"
+            onPointerDown={(e) => beginPanelResize(e, assetPanelWidth, setAssetPanelWidth, 220, 460, 1)}
+          />
+        )}
         {/* 图层面板 + 基础控件 */}
         {showLayerPanel && (
         <div
           className="border-l border-[#313244] overflow-hidden flex flex-col relative shrink-0"
           style={{ width: effectiveLayerPanelWidth }}
         >
-          {/* 左侧拖拽条:拖动改变本面板宽度 */}
-          <div
-            className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-[#89b4fa] z-10"
-            onPointerDown={(e) => {
-              e.preventDefault();
-              const startX = e.clientX;
-              const startW = layerPanelWidth;
-              const onMove = (ev: PointerEvent) => {
-                // 面板在右侧,向左拖增加宽度 → 取负 dx
-                const dx = ev.clientX - startX;
-                const next = Math.max(200, Math.min(800, startW - dx));
-                setLayerPanelWidth(next);
-              };
-              const onUp = () => {
-                window.removeEventListener('pointermove', onMove);
-                window.removeEventListener('pointerup', onUp);
-              };
-              window.addEventListener('pointermove', onMove);
-              window.addEventListener('pointerup', onUp);
-            }}
-          />
           <div className="flex-1 overflow-hidden">
             <LayerPanel />
           </div>
@@ -758,10 +785,28 @@ export default function App() {
           </div>
         </div>
         )}
+        {showLayerPanel && (
+          <div
+            className={resizeHandleClass}
+            title="拖动调整图层栏宽度"
+            onPointerDown={(e) => beginPanelResize(e, layerPanelWidth, setLayerPanelWidth, 220, 560, 1)}
+          />
+        )}
         {/* 中间：画布 */}
-        <UnityCanvas />
+        <BridgeMainCanvas />
         {/* 右侧：属性 */}
-        {showPropertyPanel && <PropertyPanel />}
+        {showPropertyPanel && (
+          <>
+            <div
+              className={resizeHandleClass}
+              title="拖动调整属性栏宽度"
+              onPointerDown={(e) => beginPanelResize(e, propertyPanelWidth, setPropertyPanelWidth, 280, 560, -1)}
+            />
+            <div className="shrink-0 overflow-hidden" style={{ width: propertyPanelWidth }}>
+              <PropertyPanel />
+            </div>
+          </>
+        )}
       </div>
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </div>

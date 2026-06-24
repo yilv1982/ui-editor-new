@@ -1,4 +1,6 @@
-const DEFAULT_EDITOR_BRIDGE_URL = 'http://127.0.0.1:8082';
+import { debugLog } from '../utils/debugLog';
+
+const DEFAULT_EDITOR_BRIDGE_URL = 'http://127.0.0.1:18082';
 
 export interface BridgeErrorInfo {
   code: string;
@@ -23,7 +25,17 @@ export interface BridgeBaseResponse {
 export interface HealthResponse extends BridgeBaseResponse {
   name: string;
   version: string;
+  loadId?: string;
+  loadedAtUtc?: string;
+  unityVersion?: string;
   projectPath: string;
+  editor?: {
+    isCompiling?: boolean;
+    isUpdating?: boolean;
+    isPlaying?: boolean;
+    isPlayingOrWillChangePlaymode?: boolean;
+    timeSinceStartup?: number;
+  };
   capabilities: string[];
 }
 
@@ -32,6 +44,7 @@ export interface SessionInfo {
   sourcePrefabPath: string;
   workingPrefabPath: string;
   mode: 'readonly' | 'temp-copy' | 'source' | string;
+  framework?: 'ugui' | 'ngui' | 'mixed' | 'unknown' | string;
   revision: string;
 }
 
@@ -64,6 +77,7 @@ export interface BboxRecord {
   height: number;
   activeInHierarchy: boolean;
   space?: string;
+  contributesToBounds?: boolean;
 }
 
 export interface NodeRecord {
@@ -71,6 +85,7 @@ export interface NodeRecord {
   unityFileId?: string;
   path: string;
   name: string;
+  framework?: 'ugui' | 'ngui' | 'mixed' | 'unknown' | string;
   parentId?: string;
   siblingIndex: number;
   children: string[];
@@ -104,6 +119,12 @@ export interface SnapshotRecord {
   coordinateSpace: string;
   image: SnapshotImage;
   bboxes: BboxRecord[];
+  viewport?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
 }
 
 export interface RenderSnapshotResponse extends BridgeBaseResponse {
@@ -252,6 +273,10 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function nowMs(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
 function stateResponseOptions(options: StateResponseOptions = {}): Required<StateResponseOptions> {
   const skipSnapshot = !!options.skipSnapshot;
   return {
@@ -274,12 +299,12 @@ export class EditorBridgeClient {
     return this.get<HealthResponse>('/health');
   }
 
-  async openPrefab(prefabPath: string, mode: 'readonly' | 'temp-copy' = 'temp-copy'): Promise<OpenPrefabResponse> {
+  async openPrefab(prefabPath: string, mode: 'readonly' | 'temp-copy' = 'temp-copy', options: { width?: number; height?: number } = {}): Promise<OpenPrefabResponse> {
     return this.post<OpenPrefabResponse>('/open-prefab', {
       prefabPath,
       mode,
-      width: 1080,
-      height: 1920,
+      width: options.width && options.width > 0 ? Math.round(options.width) : 1080,
+      height: options.height && options.height > 0 ? Math.round(options.height) : 1920,
       backgroundColor: '#162D3FFF',
     });
   }
@@ -310,11 +335,11 @@ export class EditorBridgeClient {
     });
   }
 
-  async renderSnapshot(sessionId: string, targetNodeIds?: string[], options: { profile?: boolean } = {}): Promise<RenderSnapshotResponse> {
+  async renderSnapshot(sessionId: string, targetNodeIds?: string[], options: { profile?: boolean; width?: number; height?: number } = {}): Promise<RenderSnapshotResponse> {
     return this.post<RenderSnapshotResponse>('/render-snapshot', {
       sessionId,
-      width: 1080,
-      height: 1920,
+      width: options.width && options.width > 0 ? Math.round(options.width) : 1080,
+      height: options.height && options.height > 0 ? Math.round(options.height) : 1920,
       backgroundColor: '#162D3FFF',
       targetNodeIds,
       includeBboxes: true,
@@ -568,23 +593,64 @@ export class EditorBridgeClient {
         if (data.editorBridgeUrl) return trimTrailingSlash(data.editorBridgeUrl);
       }
     } catch {
-      // Dev server config is optional. The new bridge must still default to 8082.
+      // Dev server config is optional. The new bridge must still default to 18082.
     }
     return DEFAULT_EDITOR_BRIDGE_URL;
   }
 
   private async get<T extends BridgeBaseResponse>(path: string): Promise<T> {
     const baseUrl = await this.getBaseUrl();
-    return this.parseResponse<T>(await this.fetchWithRetry(`${baseUrl}${path}`, { cache: 'no-store' }));
+    const startedAt = nowMs();
+    try {
+      const response = await this.fetchWithRetry(`${baseUrl}${path}`, { cache: 'no-store' });
+      const status = response.status;
+      const data = await this.parseResponse<T>(response);
+      debugLog('bridge-http', 'get-ok', {
+        path,
+        status,
+        elapsedMs: Math.round(nowMs() - startedAt),
+        serverProfile: data.serverProfile,
+      });
+      return data;
+    } catch (err) {
+      debugLog('bridge-http', 'get-error', {
+        path,
+        elapsedMs: Math.round(nowMs() - startedAt),
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
   }
 
   private async post<T extends BridgeBaseResponse>(path: string, body: unknown): Promise<T> {
     const baseUrl = await this.getBaseUrl();
-    return this.parseResponse<T>(await this.fetchWithRetry(`${baseUrl}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(body),
-    }));
+    const startedAt = nowMs();
+    try {
+      const response = await this.fetchWithRetry(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const status = response.status;
+      const data = await this.parseResponse<T>(response);
+      debugLog('bridge-http', 'post-ok', {
+        path,
+        status,
+        elapsedMs: Math.round(nowMs() - startedAt),
+        serverProfile: data.serverProfile,
+        profileTotalMs: 'profile' in data && data.profile && typeof data.profile === 'object'
+          ? (data.profile as { totalMs?: number }).totalMs
+          : undefined,
+      });
+      return data;
+    } catch (err) {
+      debugLog('bridge-http', 'post-error', {
+        path,
+        elapsedMs: Math.round(nowMs() - startedAt),
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
   }
 
   private async fetchWithRetry(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {

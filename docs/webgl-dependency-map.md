@@ -16,8 +16,8 @@
 
 | 文件/模块 | 当前作用 | WebGL 依赖点 | 新流程处理 |
 | --- | --- | --- | --- |
-| `src/App.tsx` | 主应用直接渲染 `UnityCanvas` | 第一视口编辑画布绑定旧 WebGL 容器 | **替换**：主画布改接 `ScreenshotCanvas` 或同等组件，底图来自 `renderSnapshot` |
-| `src/components/Canvas/UnityCanvas.tsx` | 加载 WebGL、管理 pan/zoom、拖放、命中、截图、工具栏和覆盖层 | 读取 `/unity/Build/*.js/wasm/data`，调用 `unityBridge.load`，监听 WebGL context，旧 canvas 是视觉底图 | **拆分复用**：保留 pan/zoom、工具栏、拖放、批注/参考线等交互；删除 WebGL loader/context 逻辑；底层 `<canvas>` 改为截图 `<img>` 或 bitmap canvas |
+| `src/App.tsx` | 主应用直接渲染 `BridgeMainCanvas` | 第一视口编辑画布绑定 Editor Bridge 截图与 bbox | **已替换**：主画布接 Unity Editor Bridge snapshot/bbox，不再加载旧 WebGL runtime |
+| 旧浏览器内 WebGL 主画布 | 已删除 | 曾读取 `/unity/Build/*.js/wasm/data`，调用 `unityBridge.load`，监听 WebGL context，旧 canvas 是视觉底图 | **已删除**：有价值的 pan/zoom、工具栏、拖放、批注/参考线逻辑已合并到 `BridgeMainCanvas` |
 | `src/services/UnityBridge.ts` | 浏览器内 WebGL bridge | `createUnityInstance`、`SendMessage`、`window.unityBridge`、`SyncFullTree`、`UpdateNode`、`HitTest`、`onNodeBounds`、`captureCanvas` | **替换**：新增 HTTP `EditorBridgeClient`，方法改为 `openPrefab/exportNodeTree/renderSnapshot/applyVisualPatch/validateProtectedDiff/savePrefab` |
 | `src/services/StoreSync.ts` | Zustand store 自动同步到 WebGL | store 变化后 `SyncFullTree`；拖拽期间跳过 full sync，由 overlay 发 `UpdateNode` | **替换**：取消持续同步；拖动只更新本地 overlay 和 patch draft，松手/提交时调用 `applyVisualPatch`，等待 Unity 返回新截图和 bbox |
 | `src/components/Canvas/SelectionOverlay.tsx` | 选中框、移动、缩放、旋转手柄 | bounds 类型来自 `UnityBridge`；拖动时调用 `beginInteractiveSync/endInteractiveSync` 和 `unityBridge.updateNode` | **拆分复用**：保留手柄与交互；bounds 来源改成 `renderSnapshot/exportNodeTree`；拖动结束生成视觉 patch，不再每帧发 WebGL 增量 |
@@ -27,7 +27,7 @@
 | `src/services/RuntimeDebugBridge.ts` | 运行时视觉探针、WebGL bounds 诊断、问题队列 | 依赖 `unityBridge.getDebugMessages/getLastNodeBounds/isContextLost/setSelection` 等 WebGL runtime 状态 | **降级为旧诊断**：保留历史问题解释价值；新诊断应改为截图 bbox、protected diff 和 patch 回放结果 |
 | `scripts/visual-*.mjs` | 批量视觉抽样、Unity reference 对比、WebGL bounds 分析 | 通过浏览器打开 WebGL 预览，比较 WebGL runtime 与 Unity reference | **降级/改造**：`capture-reference` 部分可复用；WebGL runtime bounds 相关判断要替换为 Editor Bridge bbox 与截图 diff |
 | `src/main.tsx` | 防止 WebGL 抢占 HTML 输入焦点 | 专门处理 WebGL canvas 每帧 focus | **移除**：截图式底图不需要 WebGL focus workaround |
-| `src/utils/ueExport/common.ts` | 多画板截图/导出辅助 | 从 `UnityCanvas` 裁剪 WebGL canvas | **替换**：导出时使用当前截图底图和叠加层合成，或请求 Editor Bridge 按画板渲染 |
+| `src/utils/ueExport/common.ts` | 多画板截图/导出辅助 | 旧流程从 WebGL canvas 裁剪画板 | **替换**：导出时使用当前 Bridge 截图底图和叠加层合成，或请求 Editor Bridge 按画板渲染 |
 | `src/components/Panels/Toolbar.tsx` | Unity 连接检查与同步按钮 | 通过 `UnitySync` 调用 `/sync-preview`、`/sync-incremental`，并显示 MCP 证书问题 | **替换**：新流程按钮应围绕打开 Prefab、刷新截图、提交 patch、验证 diff、保存副本 |
 | `src/plugins/prefabServer.ts` | Vite 端解析 Prefab、列 Prefab、列 UICommons 组件、缩略图缓存 | 不依赖 WebGL 作为数据源；只负责静态解析与缓存文件读写 | **保留辅助**：继续作为选择/搜索/静态预解析服务；权威渲染仍交给 Unity Editor Bridge |
 | `src/plugins/atlasServer.ts` | 图集/贴图搜索与读取 | 不依赖 WebGL | **保留辅助** |

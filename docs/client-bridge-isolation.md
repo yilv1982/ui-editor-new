@@ -11,9 +11,9 @@
 | Unity Editor 脚本目录 | `Assets/Editor/UIEditor/` | `Assets/Editor/UIEditorNew/` |
 | C# 类名前缀 | `UIEditor...` | `UIEditorNew...` |
 | Unity 菜单前缀 | `UIEditor/...` | `UIEditorNew/...` |
-| 本地 HTTP 端口 | `8081` | `8082` |
+| 本地 HTTP 端口 | `8081` | `18082` |
 | 健康检查 name | `UIEditorCorsProxy` | `UIEditorNewBridge` |
-| Web 默认桥接配置 | 旧 MCP/CORS 或旧本地代理 | `editorBridgeUrl = http://127.0.0.1:8082` |
+| Web 默认桥接配置 | 旧 MCP/CORS 或旧本地代理 | `editorBridgeUrl = http://127.0.0.1:18082` |
 | 同步/临时 JSON | `Assets/Editor/uieditor_*` | `Assets/Editor/UIEditorNew/uieditor_new_*`、`Library/UIEditorNew/` 或 `Assets/Temp/UIEditorNew/` |
 | 临时 Prefab | 旧工具自有策略 | `Assets/Temp/UIEditorNew/` |
 | 截图缓存 | 旧工具自有策略 | `Temp/UIEditorNew/Snapshots/` |
@@ -23,7 +23,7 @@
 - `UIEditor_new` 不扩展、不修改、不替换 `Assets/Editor/UIEditor/UIEditorCorsProxy.cs`。
 - `UIEditor_new` 不调用老桥的 `/sync-preview`、`/sync-incremental`、`/capture-reference` 作为新主链路。
 - `UIEditor_new` 不复用老桥的 `LastSyncJson`、静态队列、菜单项或后台线程。
-- `UIEditor_new` 不能在 `8081` 上启动服务；如果 `8082` 被占用，应明确失败并提示占用来源，不应回退到 `8081`。
+- `UIEditor_new` 不能在 `8081` 上启动服务；如果 `18082` 被占用，应明确失败并提示占用来源，不应回退到 `8081`。
 - 两条路线都不应直接写正式业务 Prefab 做首轮验证；`UIEditor_new` 首轮只写 `Assets/Temp/UIEditorNew/` 下的临时副本。
 - 可复制老桥中已经验证过的渲染、Prefab 归一化、Rect/BBox 计算思路，但复制后必须改名、改目录、改端口并移除对老静态状态的依赖。
 

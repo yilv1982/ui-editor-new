@@ -4,7 +4,7 @@
  */
 
 const STORAGE_KEY = 'uieditor_new_mcp_url';
-const DEFAULT_MCP_URL = 'https://127.0.0.1:8082/mcp';
+const DEFAULT_MCP_URL = 'https://127.0.0.1:18082/mcp';
 const DIRECT_MCP_URL = 'http://127.0.0.1:8080/mcp';
 const PROTOCOL_VERSION = '2025-03-26';
 
@@ -123,7 +123,7 @@ export async function initialize(): Promise<string> {
     }
   }
 
-  // 每次重新握手都从 HTTPS 重试 (Unity 重启后 8082 可能恢复，避免锁死在降级路径)
+  // 每次重新握手都从 HTTPS 重试 (Unity 重启后 18082 可能恢复，避免锁死在降级路径)
   _fallbackToHttp = false;
   _directMcp = false;
 

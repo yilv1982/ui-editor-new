@@ -19,9 +19,13 @@ import {
 // 字色预设类型
 interface ColorPreset { color: string; label: string; desc: string; }
 
-function NumberField({ label, value, onChange, min, max, step = 1 }: {
+function cx(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(' ');
+}
+
+function NumberField({ label, value, onChange, min, max, step = 1, live = false }: {
   label: string; value: number; onChange: (v: number) => void;
-  min?: number; max?: number; step?: number;
+  min?: number; max?: number; step?: number; live?: boolean;
 }) {
   const rounded = Math.round(value * 100) / 100;
   const [localValue, setLocalValue] = useState(String(rounded));
@@ -36,34 +40,45 @@ function NumberField({ label, value, onChange, min, max, step = 1 }: {
     }
   }, [rounded, editing]);
 
-  const commit = () => {
-    setEditing(false);
-    const num = Number(localValue);
+  const clamp = (num: number) => {
+    let next = min != null ? Math.max(min, num) : num;
+    next = max != null ? Math.min(max, next) : next;
+    return next;
+  };
+
+  const commitValue = (rawValue: string, options: { finishEditing: boolean; normalizeInput: boolean }) => {
+    if (options.finishEditing) setEditing(false);
+    const num = Number(rawValue);
     if (!isNaN(num)) {
-      const clamped = min != null ? Math.max(min, num) : num;
+      const clamped = clamp(num);
       onChange(clamped);
       prevValue.current = Math.round(clamped * 100) / 100;
-      setLocalValue(String(prevValue.current));
+      if (options.normalizeInput) setLocalValue(String(prevValue.current));
     } else {
-      // 无效输入，恢复
-      setLocalValue(String(rounded));
+      if (options.normalizeInput) setLocalValue(String(rounded));
     }
   };
 
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-[13px] text-[#a6adc8] w-8">{label}</span>
+    <div className="property-field">
+      <span className="property-label">{label}</span>
       <input
         type="number"
         value={localValue}
         onFocus={() => setEditing(true)}
-        onChange={(e) => setLocalValue(e.target.value)}
-        onBlur={commit}
+        onChange={(e) => {
+          const next = e.target.value;
+          setLocalValue(next);
+          if (live && next.trim() !== '') {
+            commitValue(next, { finishEditing: false, normalizeInput: false });
+          }
+        }}
+        onBlur={() => commitValue(localValue, { finishEditing: true, normalizeInput: true })}
         onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
         min={min}
         max={max}
         step={step}
-        className="w-20 text-sm text-right"
+        className="property-number-input"
       />
     </div>
   );
@@ -73,20 +88,20 @@ function ColorField({ label, value, onChange }: {
   label: string; value: string; onChange: (v: string) => void;
 }) {
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-[13px] text-[#a6adc8]">{label}</span>
-      <div className="flex items-center gap-1">
+    <div className="property-field">
+      <span className="property-label">{label}</span>
+      <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
         <input
           type="color"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="w-6 h-6 p-0 border-none cursor-pointer"
+          className="property-color-swatch"
         />
         <input
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="w-16 text-sm"
+          className="property-color-input"
         />
       </div>
     </div>
@@ -95,10 +110,70 @@ function ColorField({ label, value, onChange }: {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="mb-3">
-      <h4 className="text-[13px] font-medium text-[#89b4fa] mb-2 uppercase tracking-wide">{title}</h4>
-      <div className="space-y-1.5">{children}</div>
+    <div className="property-section">
+      <h4 className="property-section-title">{title}</h4>
+      <div className="property-section-body">{children}</div>
     </div>
+  );
+}
+
+function FieldRow({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
+  return (
+    <div className={cx('property-field', className)}>
+      <span className="property-label">{label}</span>
+      <div className="property-control">{children}</div>
+    </div>
+  );
+}
+
+function ValueText({ children, accent = false }: { children: React.ReactNode; accent?: boolean }) {
+  return <span className={cx('property-value', accent && 'property-value-accent')}>{children}</span>;
+}
+
+function ToggleButton({
+  active,
+  onClick,
+  activeText = '是',
+  inactiveText = '否',
+  title,
+  tone = 'green',
+}: {
+  active: boolean;
+  onClick: () => void;
+  activeText?: string;
+  inactiveText?: string;
+  title?: string;
+  tone?: 'green' | 'blue' | 'pink';
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={cx('property-toggle', active && `property-toggle-active-${tone}`)}
+    >
+      {active ? activeText : inactiveText}
+    </button>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  onChange,
+  children,
+}: {
+  label: string;
+  value: string | number;
+  onChange: (value: string) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <FieldRow label={label}>
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="property-select">
+        {children}
+      </select>
+    </FieldRow>
   );
 }
 
@@ -160,7 +235,7 @@ export default function PropertyPanel() {
 
   if (selectedAnnotationIds.length > 0) {
     return (
-      <div className="w-72 bg-[#1e1e2e] border-l border-[#313244] overflow-y-auto">
+      <div className="property-panel w-full h-full bg-[#1e1e2e] overflow-y-auto">
         <div className="px-3 py-2 border-b border-[#313244]">
           <h3 className="text-sm font-medium text-[#cdd6f4]">属性</h3>
         </div>
@@ -171,7 +246,7 @@ export default function PropertyPanel() {
 
   if (selectedIds.length === 0) {
     return (
-      <div className="w-72 bg-[#1e1e2e] border-l border-[#313244] flex items-center justify-center">
+      <div className="property-panel w-full h-full bg-[#1e1e2e] flex items-center justify-center">
         <span className="text-sm text-[#6c7086]">选中节点以编辑属性</span>
       </div>
     );
@@ -179,7 +254,7 @@ export default function PropertyPanel() {
 
   if (selectedIds.length > 1) {
     return (
-      <div className="w-72 bg-[#1e1e2e] border-l border-[#313244] flex items-center justify-center">
+      <div className="property-panel w-full h-full bg-[#1e1e2e] flex items-center justify-center">
         <span className="text-sm text-[#6c7086]">已选中 {selectedIds.length} 个节点</span>
       </div>
     );
@@ -190,7 +265,7 @@ export default function PropertyPanel() {
 
   if (node.locked) {
     return (
-      <div className="w-72 bg-[#1e1e2e] border-l border-[#313244] overflow-y-auto">
+      <div className="property-panel w-full h-full bg-[#1e1e2e] overflow-y-auto">
         <div className="px-3 py-2 border-b border-[#313244]">
           <h3 className="text-sm font-medium text-[#cdd6f4]">属性</h3>
         </div>
@@ -202,14 +277,8 @@ export default function PropertyPanel() {
             </div>
           </div>
           <Section title="基本">
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">名称</span>
-              <span className="max-w-36 truncate text-[13px] text-[#cdd6f4]" title={node.name}>{node.name}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">类型</span>
-              <span className="text-[13px] text-[#cdd6f4]">{node.type}</span>
-            </div>
+            <FieldRow label="名称"><ValueText>{node.name}</ValueText></FieldRow>
+            <FieldRow label="类型"><ValueText>{node.type}</ValueText></FieldRow>
           </Section>
         </div>
       </div>
@@ -288,16 +357,15 @@ export default function PropertyPanel() {
   };
 
   return (
-    <div className="w-72 bg-[#1e1e2e] border-l border-[#313244] overflow-y-auto">
+    <div className="property-panel w-full h-full bg-[#1e1e2e] overflow-y-auto">
       <div className="px-3 py-2 border-b border-[#313244]">
         <h3 className="text-sm font-medium text-[#cdd6f4]">属性</h3>
       </div>
 
-      <div className="px-3 py-3 space-y-1">
+      <div className="px-3 py-3 space-y-3">
         {/* 名称 */}
         <Section title="基本">
-          <div className="flex items-center justify-between">
-            <span className="text-[13px] text-[#a6adc8]">名称</span>
+          <FieldRow label="名称">
             <input
               type="text"
               value={nameDraft}
@@ -311,40 +379,33 @@ export default function PropertyPanel() {
                   e.currentTarget.blur();
                 }
               }}
-              className="w-32 text-sm"
+              className="w-full min-w-0 text-sm"
             />
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-[13px] text-[#a6adc8]">类型</span>
-            <span className="text-[13px] text-[#cdd6f4]">{node.type}</span>
-          </div>
+          </FieldRow>
+          <FieldRow label="类型"><ValueText>{node.type}</ValueText></FieldRow>
           {node.type === 'component' && (
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">组件</span>
-              <span className="text-[13px] text-[#89b4fa]">@{node.componentRef}</span>
-            </div>
+            <FieldRow label="组件"><ValueText accent>@{node.componentRef}</ValueText></FieldRow>
           )}
           {node.type === 'component' && (
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">置灰</span>
-              <button
+            <FieldRow label="置灰">
+              <ToggleButton
+                active={node.interactable === false}
                 onClick={() => patchNodeOnBridge({ interactable: node.interactable === false ? true : false })}
-                className={`px-3 py-0.5 text-[13px] rounded ${node.interactable === false ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
+                activeText="是"
+                inactiveText="否"
                 title="灰化整个组件子树（参考 ImgUtil.SetButtonGray）"
-              >
-                {node.interactable === false ? '是' : '否'}
-              </button>
-            </div>
+              />
+            </FieldRow>
           )}
         </Section>
 
         {/* 位置大小 */}
         <Section title="变换">
           <div className="grid grid-cols-2 gap-2">
-            <NumberField label="X" value={node.x} onChange={(v) => updateTransform('x', v)} />
-            <NumberField label="Y" value={node.y} onChange={(v) => updateTransform('y', v)} />
-            <NumberField label="W" value={node.width} onChange={(v) => updateTransform('width', v)} min={1} />
-            <NumberField label="H" value={node.height} onChange={(v) => updateTransform('height', v)} min={1} />
+            <NumberField label="X" value={node.x} onChange={(v) => updateTransform('x', v)} live />
+            <NumberField label="Y" value={node.y} onChange={(v) => updateTransform('y', v)} live />
+            <NumberField label="W" value={node.width} onChange={(v) => updateTransform('width', v)} min={1} live />
+            <NumberField label="H" value={node.height} onChange={(v) => updateTransform('height', v)} min={1} live />
           </div>
           <NumberField label="旋转" value={node.rotation} onChange={(v) => updateTransform('rotation', v)} />
         </Section>
@@ -428,35 +489,36 @@ export default function PropertyPanel() {
           </div>
 
           {/* Pivot */}
-          <div className="flex items-center gap-2 mt-2">
-            <span className="text-[12px] text-[#6c7086] w-10">Pivot</span>
-            <input
-              type="number" min={0} max={1} step={0.1}
-              value={node.pivot?.x ?? 0.5}
-              onChange={(e) => {
-                const oldPx = node.pivot?.x ?? 0.5;
-                const newPx = Number(e.target.value);
-                patchRectTransformOnBridge({
-                  pivot: { x: newPx, y: node.pivot?.y ?? 0.5 },
-                  anchoredPosition: { x: node.x + (oldPx - newPx) * node.width, y: node.y },
-                });
-              }}
-              className="w-14 text-sm text-center"
-            />
-            <input
-              type="number" min={0} max={1} step={0.1}
-              value={node.pivot?.y ?? 0.5}
-              onChange={(e) => {
-                const oldPy = node.pivot?.y ?? 0.5;
-                const newPy = Number(e.target.value);
-                patchRectTransformOnBridge({
-                  pivot: { x: node.pivot?.x ?? 0.5, y: newPy },
-                  anchoredPosition: { x: node.x, y: node.y + (oldPy - newPy) * node.height },
-                });
-              }}
-              className="w-14 text-sm text-center"
-            />
-          </div>
+          <FieldRow label="Pivot" className="mt-2">
+            <div className="property-dual-inputs">
+              <input
+                type="number" min={0} max={1} step={0.1}
+                value={node.pivot?.x ?? 0.5}
+                onChange={(e) => {
+                  const oldPx = node.pivot?.x ?? 0.5;
+                  const newPx = Number(e.target.value);
+                  patchRectTransformOnBridge({
+                    pivot: { x: newPx, y: node.pivot?.y ?? 0.5 },
+                    anchoredPosition: { x: node.x + (oldPx - newPx) * node.width, y: node.y },
+                  });
+                }}
+                className="property-inline-number"
+              />
+              <input
+                type="number" min={0} max={1} step={0.1}
+                value={node.pivot?.y ?? 0.5}
+                onChange={(e) => {
+                  const oldPy = node.pivot?.y ?? 0.5;
+                  const newPy = Number(e.target.value);
+                  patchRectTransformOnBridge({
+                    pivot: { x: node.pivot?.x ?? 0.5, y: newPy },
+                    anchoredPosition: { x: node.x, y: node.y + (oldPy - newPy) * node.height },
+                  });
+                }}
+                className="property-inline-number"
+              />
+            </div>
+          </FieldRow>
         </Section>
 
         {/* 文字 */}
@@ -578,26 +640,21 @@ export default function PropertyPanel() {
               />
             )}
             {/* 字体 */}
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">字体</span>
-              <select
-                value={node.fontPath || ''}
-                onChange={(e) => {
-                  const fontPath = e.target.value;
-                  if (fontPath) patchTextStyleOnBridge({ fontPath });
-                }}
-                className="w-28 text-[12px] bg-[#313244] text-[#cdd6f4] border border-[#45475a] rounded px-1 py-0.5 outline-none"
-              >
+            <SelectField
+              label="字体"
+              value={node.fontPath || ''}
+              onChange={(fontPath) => {
+                if (fontPath) patchTextStyleOnBridge({ fontPath });
+              }}
+            >
                 <option value="">默认</option>
                 {FONT_LIST.map(f => (
                   <option key={f.path} value={f.path}>{f.label}</option>
                 ))}
-              </select>
-            </div>
+            </SelectField>
             {/* 字体样式 */}
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">样式</span>
-              <div className="flex gap-1.5">
+            <FieldRow label="样式">
+              <div className="property-segment-row">
                 {([
                   { value: 0, label: 'N' , title: 'Normal' },
                   { value: 1, label: 'B', title: 'Bold' },
@@ -608,26 +665,23 @@ export default function PropertyPanel() {
                     key={s.value}
                     title={s.title}
                     onClick={() => patchNodeOnBridge({ fontStyle: s.value })}
-                    className={`px-2.5 py-1 text-[13px] rounded ${
-                      (node.fontStyle || 0) === s.value ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'
-                    }`}
+                    className={cx('property-segment-button', (node.fontStyle || 0) === s.value && 'property-segment-button-active-blue')}
                   >
                     {s.label}
                   </button>
                 ))}
               </div>
-            </div>
+            </FieldRow>
             <NumberField label="字号" value={node.style.fontSize} onChange={(v) => patchTextStyleOnBridge({ fontSize: v })} min={8} />
             <ColorField label="字色" value={node.style.fontColor} onChange={(v) => patchTextStyleOnBridge({ color: v })} />
             {/* 预设颜色 */}
             <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] text-[#a6adc8]">预设</span>
+              <FieldRow label="预设">
                 <button
                   onClick={() => { setEditDraft(colorPresets.map(c => ({ ...c }))); setEditingPresets(!editingPresets); }}
                   className="text-[12px] text-[#6c7086] hover:text-[#89b4fa] transition-colors"
                 >{editingPresets ? '完成' : '编辑'}</button>
-              </div>
+              </FieldRow>
               <div className="flex gap-1 flex-wrap">
                 {colorPresets.map((c, i) => (
                   <div key={i} className="relative group">
@@ -678,8 +732,7 @@ export default function PropertyPanel() {
               )}
             </div>
             {/* Unity TextAnchor 对齐 3×3 网格 */}
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">对齐</span>
+            <FieldRow label="对齐">
               <div className="grid grid-cols-3 gap-0.5">
                 {([
                   { v: 0, icon: '╔' }, { v: 1, icon: '╦' }, { v: 2, icon: '╗' },
@@ -711,16 +764,15 @@ export default function PropertyPanel() {
                   </button>
                 ))}
               </div>
-            </div>
+            </FieldRow>
           </Section>
         )}
 
         {/* 控件类型标识 */}
         {['button', 'scrollview', 'toggle', 'inputfield', 'rawimage'].includes(node.type) && (
           <Section title="Unity 控件">
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">控件</span>
-              <span className="text-[13px] px-2 py-0.5 rounded" style={{
+            <FieldRow label="控件">
+              <span className="property-toggle" style={{
                 backgroundColor: node.type === 'button' ? '#89b4fa' : node.type === 'scrollview' ? '#a6e3a1'
                   : node.type === 'toggle' ? '#f9e2af' : node.type === 'inputfield' ? '#cba6f7' : '#fab387',
                 color: '#1e1e2e',
@@ -728,54 +780,48 @@ export default function PropertyPanel() {
                 {node.type === 'button' ? 'Button' : node.type === 'scrollview' ? 'ScrollView'
                   : node.type === 'toggle' ? 'Toggle' : node.type === 'inputfield' ? 'InputField' : 'RawImage'}
               </span>
-            </div>
+            </FieldRow>
 
             {node.type === 'button' && (
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] text-[#a6adc8]">可交互</span>
-                <button
+              <FieldRow label="可交互">
+                <ToggleButton
+                  active={node.interactable !== false}
                   onClick={() => patchNodeOnBridge({ interactable: !node.interactable })}
-                  className={`px-3 py-0.5 text-[13px] rounded ${node.interactable !== false ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-                >
-                  {node.interactable !== false ? '是' : '否'}
-                </button>
-              </div>
+                />
+              </FieldRow>
             )}
 
             {node.type === 'button' && (
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] text-[#a6adc8]">Image组件</span>
-                <span className={`px-3 py-0.5 text-[13px] rounded ${btnHasImg ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}>
+              <FieldRow label="Image组件">
+                <span className={cx('property-toggle', btnHasImg && 'property-toggle-active-green')}>
                   {btnHasImg ? '有' : '无'}
                 </span>
-              </div>
+              </FieldRow>
             )}
 
             {node.type === 'scrollview' && (
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] text-[#a6adc8]">方向</span>
-                <div className="flex gap-1">
+              <FieldRow label="方向">
+                <div className="property-segment-row">
                   {(['vertical', 'horizontal', 'both'] as const).map((d) => (
                     <button key={d} onClick={() => patchNodeOnBridge({ scrollDirection: d })}
-                      className={`px-2 py-0.5 text-[12px] rounded ${node.scrollDirection === d ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
+                      className={cx('property-segment-button', node.scrollDirection === d && 'property-segment-button-active-green')}
                     >
                       {d === 'vertical' ? '垂直' : d === 'horizontal' ? '水平' : '双向'}
                     </button>
                   ))}
                 </div>
-              </div>
+              </FieldRow>
             )}
 
             {node.type === 'toggle' && (
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] text-[#a6adc8]">初始值</span>
-                <button
+              <FieldRow label="初始值">
+                <ToggleButton
+                  active={!!node.isOn}
                   onClick={() => patchNodeOnBridge({ isOn: !node.isOn })}
-                  className={`px-3 py-0.5 text-[13px] rounded ${node.isOn ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-                >
-                  {node.isOn ? 'ON' : 'OFF'}
-                </button>
-              </div>
+                  activeText="ON"
+                  inactiveText="OFF"
+                />
+              </FieldRow>
             )}
           </Section>
         )}
@@ -799,9 +845,8 @@ export default function PropertyPanel() {
         {(['image', 'button', 'toggle', 'rawimage'] as const).includes(node.type as any) && btnHasImg && (
           <Section title="Image 属性">
             {/* Color (imageColor #RRGGBBAA) */}
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">Color</span>
-              <div className="flex items-center gap-1">
+            <FieldRow label="Color">
+              <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
                 <input
                   type="color"
                   value={(node.imageColor || '#ffffff').slice(0, 7)}
@@ -809,21 +854,20 @@ export default function PropertyPanel() {
                     const alpha = node.imageColor && node.imageColor.length === 9 ? node.imageColor.slice(7, 9) : 'ff';
                     patchNodeOnBridge({ imageColor: e.target.value + alpha });
                   }}
-                  className="w-6 h-6 p-0 border-none cursor-pointer"
+                  className="property-color-swatch"
                 />
                 <input
                   type="text"
                   value={node.imageColor || '#ffffffff'}
                   onChange={(e) => patchNodeOnBridge({ imageColor: e.target.value })}
-                  className="w-[72px] text-[12px]"
+                  className="property-color-input"
                   placeholder="#RRGGBBAA"
                 />
               </div>
-            </div>
+            </FieldRow>
             {/* Alpha slider */}
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">Alpha</span>
-              <div className="flex items-center gap-1">
+            <FieldRow label="Alpha">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
                 <input
                   type="range"
                   min={0} max={255} step={1}
@@ -833,94 +877,86 @@ export default function PropertyPanel() {
                     const alpha = parseInt(e.target.value).toString(16).padStart(2, '0');
                     patchNodeOnBridge({ imageColor: hex + alpha });
                   }}
-                  className="w-16 h-1 accent-[#89b4fa]"
+                  className="property-slider"
                 />
                 <span className="text-[12px] text-[#a6adc8] w-7 text-right">
                   {node.imageColor && node.imageColor.length === 9 ? parseInt(node.imageColor.slice(7, 9), 16) : 255}
                 </span>
               </div>
-            </div>
+            </FieldRow>
 
             {/* Image Enabled — Image 组件显隐（不影响节点本身） */}
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">显示图像</span>
-              <button
+            <FieldRow label="显示图像">
+              <ToggleButton
+                active={node.imageEnabled !== false}
                 onClick={() => patchNodeOnBridge({ imageEnabled: node.imageEnabled === false ? true : false })}
-                className={`px-3 py-0.5 text-[13px] rounded ${node.imageEnabled !== false ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-              >
-                {node.imageEnabled !== false ? '✓' : '✗'}
-              </button>
-            </div>
+                activeText="✓"
+                inactiveText="✗"
+              />
+            </FieldRow>
 
             {/* Raycast Target */}
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">Raycast Target</span>
-              <button
+            <FieldRow label="Raycast Target">
+              <ToggleButton
+                active={node.imageRaycastTarget !== false}
                 onClick={() => patchNodeOnBridge({ imageRaycastTarget: node.imageRaycastTarget === false ? true : false })}
-                className={`px-3 py-0.5 text-[13px] rounded ${node.imageRaycastTarget !== false ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-              >
-                {node.imageRaycastTarget !== false ? '✓' : '✗'}
-              </button>
-            </div>
+                activeText="✓"
+                inactiveText="✗"
+              />
+            </FieldRow>
 
             {/* Image Type */}
             {node.type !== 'rawimage' && (
               <>
-                <div className="flex items-center justify-between">
-                  <span className="text-[13px] text-[#a6adc8]">Image Type</span>
-                  <div className="flex gap-1">
+                <FieldRow label="Image Type">
+                  <div className="property-segment-row">
                     {(['Simple', 'Sliced', 'Tiled', 'Filled'] as const).map((t) => (
                       <button key={t} onClick={() => {
                         patchNodeOnBridge({
                           imageType: t,
                         });
                       }}
-                        className={`px-1.5 py-0.5 text-[11px] rounded ${(node.imageType || 'Simple') === t ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
+                        className={cx('property-segment-button', (node.imageType || 'Simple') === t && 'property-segment-button-active-blue')}
                       >
                         {t}
                       </button>
                     ))}
                   </div>
-                </div>
+                </FieldRow>
 
                 {/* Fill Center (Sliced / Tiled) */}
                 {((node.imageType || 'Simple') === 'Sliced' || (node.imageType || 'Simple') === 'Tiled') && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-[13px] text-[#a6adc8]">Fill Center</span>
-                    <button
+                  <FieldRow label="Fill Center">
+                    <ToggleButton
+                      active={node.fillCenter !== false}
                       onClick={() => patchNodeOnBridge({ fillCenter: node.fillCenter === false ? true : false })}
-                      className={`px-3 py-0.5 text-[13px] rounded ${node.fillCenter !== false ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-                    >
-                      {node.fillCenter !== false ? '✓' : '✗'}
-                    </button>
-                  </div>
+                      activeText="✓"
+                      inactiveText="✗"
+                      tone="blue"
+                    />
+                  </FieldRow>
                 )}
 
                 {/* Filled sub-properties */}
                 {(node.imageType || 'Simple') === 'Filled' && (
                   <>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[13px] text-[#a6adc8]">Fill Method</span>
-                      <select
-                        value={node.fillMethod ?? 0}
-                        onChange={(e) => patchNodeOnBridge({ fillMethod: parseInt(e.target.value), fillOrigin: 0 })}
-                        className="text-[12px] bg-[#313244] text-[#cdd6f4] rounded px-1 py-0.5 border-none"
-                      >
+                    <SelectField
+                      label="Fill Method"
+                      value={node.fillMethod ?? 0}
+                      onChange={(value) => patchNodeOnBridge({ fillMethod: parseInt(value), fillOrigin: 0 })}
+                    >
                         <option value={0}>Horizontal</option>
                         <option value={1}>Vertical</option>
                         <option value={2}>Radial 90</option>
                         <option value={3}>Radial 180</option>
                         <option value={4}>Radial 360</option>
-                      </select>
-                    </div>
+                    </SelectField>
 
-                    <div className="flex items-center justify-between">
-                      <span className="text-[13px] text-[#a6adc8]">Fill Origin</span>
-                      <select
-                        value={node.fillOrigin ?? 0}
-                        onChange={(e) => patchNodeOnBridge({ fillOrigin: parseInt(e.target.value) })}
-                        className="text-[12px] bg-[#313244] text-[#cdd6f4] rounded px-1 py-0.5 border-none"
-                      >
+                    <SelectField
+                      label="Fill Origin"
+                      value={node.fillOrigin ?? 0}
+                      onChange={(value) => patchNodeOnBridge({ fillOrigin: parseInt(value) })}
+                    >
                         {(node.fillMethod ?? 0) <= 1 ? (
                           // Horizontal: Left(0)/Right(1), Vertical: Bottom(0)/Top(1)
                           <>
@@ -944,62 +980,60 @@ export default function PropertyPanel() {
                             <option value={3}>Right</option>
                           </>
                         )}
-                      </select>
-                    </div>
+                    </SelectField>
 
-                    <div className="flex items-center justify-between">
-                      <span className="text-[13px] text-[#a6adc8]">Fill Amount</span>
-                      <div className="flex items-center gap-1">
+                    <FieldRow label="Fill Amount">
+                      <div className="flex min-w-0 flex-1 items-center gap-2">
                         <input
                           type="range"
                           min={0} max={1} step={0.01}
                           value={node.fillAmount ?? 1}
                           onChange={(e) => patchNodeOnBridge({ fillAmount: parseFloat(e.target.value) })}
-                          className="w-16 h-1 accent-[#89b4fa]"
+                          className="property-slider"
                         />
                         <span className="text-[12px] text-[#a6adc8] w-8 text-right">
                           {((node.fillAmount ?? 1) * 100).toFixed(0)}%
                         </span>
                       </div>
-                    </div>
+                    </FieldRow>
 
-                    <div className="flex items-center justify-between">
-                      <span className="text-[13px] text-[#a6adc8]">Clockwise</span>
-                      <button
+                    <FieldRow label="Clockwise">
+                      <ToggleButton
+                        active={node.fillClockwise !== false}
                         onClick={() => patchNodeOnBridge({ fillClockwise: node.fillClockwise === false ? true : false })}
-                        className={`px-3 py-0.5 text-[13px] rounded ${node.fillClockwise !== false ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-                      >
-                        {node.fillClockwise !== false ? '✓' : '✗'}
-                      </button>
-                    </div>
+                        activeText="✓"
+                        inactiveText="✗"
+                        tone="blue"
+                      />
+                    </FieldRow>
                   </>
                 )}
 
                 {/* Use Sprite Mesh (Simple only) */}
                 {(node.imageType || 'Simple') === 'Simple' && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-[13px] text-[#a6adc8]">Use Sprite Mesh</span>
-                    <button
+                  <FieldRow label="Use Sprite Mesh">
+                    <ToggleButton
+                      active={!!node.useSpriteMesh}
                       onClick={() => patchNodeOnBridge({ useSpriteMesh: !node.useSpriteMesh })}
-                      className={`px-3 py-0.5 text-[13px] rounded ${node.useSpriteMesh ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-                    >
-                      {node.useSpriteMesh ? '✓' : '✗'}
-                    </button>
-                  </div>
+                      activeText="✓"
+                      inactiveText="✗"
+                      tone="blue"
+                    />
+                  </FieldRow>
                 )}
               </>
             )}
 
             {/* Preserve Aspect */}
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">Preserve Aspect</span>
-              <button
+            <FieldRow label="Preserve Aspect">
+              <ToggleButton
+                active={!!node.preserveAspect}
                 onClick={() => patchNodeOnBridge({ preserveAspect: !node.preserveAspect })}
-                className={`px-3 py-0.5 text-[13px] rounded ${node.preserveAspect ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-              >
-                {node.preserveAspect ? '✓' : '✗'}
-              </button>
-            </div>
+                activeText="✓"
+                inactiveText="✗"
+                tone="blue"
+              />
+            </FieldRow>
 
             {/* Set Native Size */}
             {node.imageData && (
@@ -1022,43 +1056,43 @@ export default function PropertyPanel() {
             )}
 
             {/* Outline */}
-            <div className="flex items-center justify-between mt-2">
-              <span className="text-[13px] text-[#a6adc8]">Outline</span>
-              <button
+            <FieldRow label="Outline" className="mt-2">
+              <ToggleButton
+                active={!!node.outline}
                 onClick={() => {
                   patchNodeOnBridge({
                     outline: node.outline ? undefined : { color: '#000000', distance: [1, -1], useGraphicAlpha: true },
                   });
                 }}
-                className={`px-3 py-0.5 text-[13px] rounded ${node.outline ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-              >
-                {node.outline ? '已开启' : '关闭'}
-              </button>
-            </div>
+                activeText="已开启"
+                inactiveText="关闭"
+                tone="blue"
+              />
+            </FieldRow>
             {node.outline && (
               <>
                 <ColorField label="Effect Color" value={node.outline.color} onChange={(v) => {
                   patchNodeOnBridge({ outline: { ...node.outline!, color: v } });
                 }} />
-                <div className="flex items-center gap-2">
-                  <span className="text-[12px] text-[#6c7086] w-10">距离X</span>
-                  <input type="number" value={node.outline.distance[0]} step={0.5}
-                    onChange={(e) => patchNodeOnBridge({ outline: { ...node.outline!, distance: [Number(e.target.value), node.outline!.distance[1]] } })}
-                    className="w-14 text-sm text-center" />
-                  <span className="text-[12px] text-[#6c7086] w-3">Y</span>
-                  <input type="number" value={node.outline.distance[1]} step={0.5}
-                    onChange={(e) => patchNodeOnBridge({ outline: { ...node.outline!, distance: [node.outline!.distance[0], Number(e.target.value)] } })}
-                    className="w-14 text-sm text-center" />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[13px] text-[#a6adc8]">Use Graphic Alpha</span>
-                  <button
+                <FieldRow label="距离">
+                  <div className="property-dual-inputs">
+                    <input type="number" value={node.outline.distance[0]} step={0.5}
+                      onChange={(e) => patchNodeOnBridge({ outline: { ...node.outline!, distance: [Number(e.target.value), node.outline!.distance[1]] } })}
+                      className="property-inline-number" />
+                    <input type="number" value={node.outline.distance[1]} step={0.5}
+                      onChange={(e) => patchNodeOnBridge({ outline: { ...node.outline!, distance: [node.outline!.distance[0], Number(e.target.value)] } })}
+                      className="property-inline-number" />
+                  </div>
+                </FieldRow>
+                <FieldRow label="Use Graphic Alpha">
+                  <ToggleButton
+                    active={node.outline.useGraphicAlpha !== false}
                     onClick={() => patchNodeOnBridge({ outline: { ...node.outline!, useGraphicAlpha: !node.outline!.useGraphicAlpha } })}
-                    className={`px-3 py-0.5 text-[13px] rounded ${node.outline.useGraphicAlpha !== false ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-                  >
-                    {node.outline.useGraphicAlpha !== false ? '✓' : '✗'}
-                  </button>
-                </div>
+                    activeText="✓"
+                    inactiveText="✗"
+                    tone="blue"
+                  />
+                </FieldRow>
               </>
             )}
           </Section>
@@ -1066,41 +1100,40 @@ export default function PropertyPanel() {
 
         {/* 遮罩 */}
         <Section title="遮罩">
-          <div className="flex items-center justify-between">
-            <span className="text-[13px] text-[#a6adc8]">Mask</span>
-            <button
+          <FieldRow label="Mask">
+            <ToggleButton
+              active={!!node.isMask}
               onClick={() => {
                 patchNodeOnBridge({
                   isMask: !node.isMask,
                   maskType: node.maskType || 'RectMask2D',
                 });
               }}
-              className={`px-3 py-0.5 text-[13px] rounded ${node.isMask ? 'bg-[#f5c2e7] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-            >
-              {node.isMask ? '已开启' : '关闭'}
-            </button>
-          </div>
+              activeText="已开启"
+              inactiveText="关闭"
+              tone="pink"
+            />
+          </FieldRow>
           {node.isMask && (
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">类型</span>
-              <div className="flex gap-1">
+            <FieldRow label="类型">
+              <div className="property-segment-row">
                 {(['Mask', 'RectMask2D'] as const).map((t) => (
                   <button key={t} onClick={() => patchNodeOnBridge({ maskType: t })}
-                    className={`px-2 py-0.5 text-[12px] rounded ${node.maskType === t ? 'bg-[#f5c2e7] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
+                    className={cx('property-segment-button', node.maskType === t && 'property-segment-button-active-pink')}
                   >
                     {t}
                   </button>
                 ))}
               </div>
-            </div>
+            </FieldRow>
           )}
         </Section>
 
         {/* 布局组 LayoutGroup */}
         <Section title="布局组 LayoutGroup">
-          <div className="flex items-center justify-between">
-            <span className="text-[13px] text-[#a6adc8]">启用</span>
-            <button
+          <FieldRow label="启用">
+            <ToggleButton
+              active={!!node.layoutGroup?.enabled}
               onClick={() => {
                 if (node.layoutGroup?.enabled) {
                   patchNodeOnBridge({ layoutGroup: { ...node.layoutGroup, enabled: false } });
@@ -1119,11 +1152,10 @@ export default function PropertyPanel() {
                   });
                 }
               }}
-              className={`px-3 py-0.5 text-[13px] rounded ${node.layoutGroup?.enabled ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-            >
-              {node.layoutGroup?.enabled ? '已开启' : '关闭'}
-            </button>
-          </div>
+              activeText="已开启"
+              inactiveText="关闭"
+            />
+          </FieldRow>
 
           {node.layoutGroup?.enabled && (() => {
             const lg = node.layoutGroup;
@@ -1135,32 +1167,31 @@ export default function PropertyPanel() {
             return (
               <>
                 {/* 布局类型 */}
-                <div className="flex items-center justify-between">
-                  <span className="text-[13px] text-[#a6adc8]">类型</span>
-                  <div className="flex gap-1">
+                <FieldRow label="类型">
+                  <div className="property-segment-row">
                     {(['Horizontal', 'Vertical', 'Grid'] as const).map((t) => (
                       <button key={t} onClick={() => updateLG({
                         layoutType: t,
                         isHorizontal: t === 'Horizontal',
                         ...(t === 'Grid' ? { cellSizeX: lg.cellSizeX ?? 100, cellSizeY: lg.cellSizeY ?? 100, spacingY: lg.spacingY ?? 0, startCorner: lg.startCorner ?? 0, startAxis: lg.startAxis ?? 0, constraint: lg.constraint ?? 0, constraintCount: lg.constraintCount ?? 2 } : {}),
                       })}
-                        className={`px-2 py-0.5 text-[12px] rounded ${currentType === t ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
+                        className={cx('property-segment-button', currentType === t && 'property-segment-button-active-green')}
                       >
                         {t === 'Horizontal' ? '水平' : t === 'Vertical' ? '垂直' : '网格'}
                       </button>
                     ))}
                   </div>
-                </div>
+                </FieldRow>
 
                 {/* Grid 专属属性 */}
                 {isGrid && (
                   <>
-                    <div className="text-[12px] text-[#6c7086] mt-1">Cell Size</div>
+                    <div className="property-subtitle">Cell Size</div>
                     <div className="grid grid-cols-2 gap-1">
                       <NumberField label="X" value={lg.cellSizeX ?? 100} onChange={(v) => updateLG({ cellSizeX: v })} min={1} />
                       <NumberField label="Y" value={lg.cellSizeY ?? 100} onChange={(v) => updateLG({ cellSizeY: v })} min={1} />
                     </div>
-                    <div className="text-[12px] text-[#6c7086] mt-1">Spacing</div>
+                    <div className="property-subtitle">Spacing</div>
                     <div className="grid grid-cols-2 gap-1">
                       <NumberField label="X" value={lg.spacing} onChange={(v) => updateLG({ spacing: v })} min={0} />
                       <NumberField label="Y" value={lg.spacingY ?? 0} onChange={(v) => updateLG({ spacingY: v })} min={0} />
@@ -1174,7 +1205,7 @@ export default function PropertyPanel() {
                 )}
 
                 {/* Padding — Unity 风格排列 */}
-                <div className="text-[12px] text-[#6c7086] mt-1">Padding</div>
+                <div className="property-subtitle">Padding</div>
                 <div className="flex flex-col items-center gap-0.5">
                   <NumberField label="上" value={lg.padTop} onChange={(v) => updateLG({ padTop: v })} min={0} />
                   <div className="grid grid-cols-2 gap-1 w-full">
@@ -1184,39 +1215,27 @@ export default function PropertyPanel() {
                   <NumberField label="下" value={lg.padBottom} onChange={(v) => updateLG({ padBottom: v })} min={0} />
                 </div>
                 {!isGrid && (lg.padRight > 0 || lg.padBottom > 0) && !lg.childForceExpandWidth && !lg.childForceExpandHeight && !lg.childControlWidth && !lg.childControlHeight && (
-                  <div className="text-[11px] text-[#f9e2af] mt-0.5">提示: 右/下 padding 需开启下方 Control 或 Force Expand 才有可见效果</div>
+                  <div className="property-small-note">提示: 右/下 padding 需开启下方 Control 或 Force Expand 才有可见效果</div>
                 )}
 
                 {/* Grid 专属: Start Corner / Start Axis / Constraint */}
                 {isGrid && (
                   <>
-                    <div className="flex items-center justify-between mt-1">
-                      <span className="text-[13px] text-[#a6adc8]">起始角</span>
-                      <select value={lg.startCorner ?? 0} onChange={(e) => updateLG({ startCorner: Number(e.target.value) })}
-                        className="w-28 text-[12px] bg-[#313244] text-[#cdd6f4] border border-[#45475a] rounded px-1 py-0.5">
+                    <SelectField label="起始角" value={lg.startCorner ?? 0} onChange={(value) => updateLG({ startCorner: Number(value) })}>
                         <option value={0}>左上</option>
                         <option value={1}>右上</option>
                         <option value={2}>左下</option>
                         <option value={3}>右下</option>
-                      </select>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[13px] text-[#a6adc8]">排列轴</span>
-                      <select value={lg.startAxis ?? 0} onChange={(e) => updateLG({ startAxis: Number(e.target.value) })}
-                        className="w-28 text-[12px] bg-[#313244] text-[#cdd6f4] border border-[#45475a] rounded px-1 py-0.5">
+                    </SelectField>
+                    <SelectField label="排列轴" value={lg.startAxis ?? 0} onChange={(value) => updateLG({ startAxis: Number(value) })}>
                         <option value={0}>水平</option>
                         <option value={1}>垂直</option>
-                      </select>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[13px] text-[#a6adc8]">约束</span>
-                      <select value={lg.constraint ?? 0} onChange={(e) => updateLG({ constraint: Number(e.target.value) })}
-                        className="w-28 text-[12px] bg-[#313244] text-[#cdd6f4] border border-[#45475a] rounded px-1 py-0.5">
+                    </SelectField>
+                    <SelectField label="约束" value={lg.constraint ?? 0} onChange={(value) => updateLG({ constraint: Number(value) })}>
                         <option value={0}>自由</option>
                         <option value={1}>固定列数</option>
                         <option value={2}>固定行数</option>
-                      </select>
-                    </div>
+                    </SelectField>
                     {(lg.constraint ?? 0) > 0 && (
                       <NumberField label="约束数量" value={lg.constraintCount ?? 2} onChange={(v) => updateLG({ constraintCount: v })} min={1} />
                     )}
@@ -1224,13 +1243,7 @@ export default function PropertyPanel() {
                 )}
 
                 {/* Child Alignment */}
-                <div className="flex items-center justify-between mt-1">
-                  <span className="text-[13px] text-[#a6adc8]">对齐</span>
-                  <select
-                    value={lg.childAlignment}
-                    onChange={(e) => updateLG({ childAlignment: Number(e.target.value) })}
-                    className="w-24 text-[12px] bg-[#313244] text-[#cdd6f4] border border-[#45475a] rounded px-1 py-0.5"
-                  >
+                <SelectField label="对齐" value={lg.childAlignment} onChange={(value) => updateLG({ childAlignment: Number(value) })}>
                     <option value={0}>左上</option>
                     <option value={1}>中上</option>
                     <option value={2}>右上</option>
@@ -1240,28 +1253,27 @@ export default function PropertyPanel() {
                     <option value={6}>左下</option>
                     <option value={7}>中下</option>
                     <option value={8}>右下</option>
-                  </select>
-                </div>
+                </SelectField>
 
                 {/* Control & ForceExpand — 仅 H/V */}
                 {!isGrid && (
                   <>
-                    <div className="text-[12px] text-[#6c7086] mt-1">子节点控制</div>
+                    <div className="property-subtitle">子节点控制</div>
                     {([
                       ['childControlWidth', 'Control Width'],
                       ['childControlHeight', 'Control Height'],
                       ['childForceExpandWidth', 'Force Expand W'],
                       ['childForceExpandHeight', 'Force Expand H'],
                     ] as const).map(([key, label]) => (
-                      <div key={key} className="flex items-center justify-between">
-                        <span className="text-[12px] text-[#a6adc8]">{label}</span>
-                        <button
+                      <FieldRow key={key} label={label}>
+                        <ToggleButton
+                          active={!!(lg as any)[key]}
                           onClick={() => updateLG({ [key]: !(lg as any)[key] })}
-                          className={`px-2 py-0.5 text-[12px] rounded ${(lg as any)[key] ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-                        >
-                          {(lg as any)[key] ? 'ON' : 'OFF'}
-                        </button>
-                      </div>
+                          activeText="ON"
+                          inactiveText="OFF"
+                          tone="blue"
+                        />
+                      </FieldRow>
                     ))}
                   </>
                 )}
@@ -1272,9 +1284,9 @@ export default function PropertyPanel() {
 
         {/* ContentSizeFitter */}
         <Section title="ContentSizeFitter">
-          <div className="flex items-center justify-between">
-            <span className="text-[13px] text-[#a6adc8]">启用</span>
-            <button
+          <FieldRow label="启用">
+            <ToggleButton
+              active={!!node.contentSizeFitter?.enabled}
               onClick={() => {
                 if (node.contentSizeFitter?.enabled) {
                   patchNodeOnBridge({ contentSizeFitter: { ...node.contentSizeFitter, enabled: false } });
@@ -1289,11 +1301,10 @@ export default function PropertyPanel() {
                   });
                 }
               }}
-              className={`px-3 py-0.5 text-[13px] rounded ${node.contentSizeFitter?.enabled ? 'bg-[#a6e3a1] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-            >
-              {node.contentSizeFitter?.enabled ? '已开启' : '关闭'}
-            </button>
-          </div>
+              activeText="已开启"
+              inactiveText="关闭"
+            />
+          </FieldRow>
           {node.contentSizeFitter?.enabled && (() => {
             const csf = node.contentSizeFitter;
             const updateCSF = (patch: Record<string, any>) => {
@@ -1306,20 +1317,12 @@ export default function PropertyPanel() {
             ];
             return (
               <>
-                <div className="flex items-center justify-between">
-                  <span className="text-[13px] text-[#a6adc8]">水平</span>
-                  <select value={csf.horizontalFit} onChange={(e) => updateCSF({ horizontalFit: Number(e.target.value) })}
-                    className="w-28 text-[12px] bg-[#313244] text-[#cdd6f4] border border-[#45475a] rounded px-1 py-0.5">
+                <SelectField label="水平" value={csf.horizontalFit} onChange={(value) => updateCSF({ horizontalFit: Number(value) })}>
                     {fitOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[13px] text-[#a6adc8]">垂直</span>
-                  <select value={csf.verticalFit} onChange={(e) => updateCSF({ verticalFit: Number(e.target.value) })}
-                    className="w-28 text-[12px] bg-[#313244] text-[#cdd6f4] border border-[#45475a] rounded px-1 py-0.5">
+                </SelectField>
+                <SelectField label="垂直" value={csf.verticalFit} onChange={(value) => updateCSF({ verticalFit: Number(value) })}>
                     {fitOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
-                </div>
+                </SelectField>
               </>
             );
           })()}
@@ -1329,66 +1332,66 @@ export default function PropertyPanel() {
         {node.type === 'text' && (
           <Section title="文字效果">
             {/* Outline */}
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-[#a6adc8]">描边</span>
-              <button
+            <FieldRow label="描边">
+              <ToggleButton
+                active={!!node.textOutline}
                 onClick={() => {
                   patchNodeOnBridge({
                     textOutline: node.textOutline ? undefined : { color: '#000000', distance: [1, -1] },
                   });
                 }}
-                className={`px-3 py-0.5 text-[13px] rounded ${node.textOutline ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-              >
-                {node.textOutline ? '已开启' : '关闭'}
-              </button>
-            </div>
+                activeText="已开启"
+                inactiveText="关闭"
+                tone="blue"
+              />
+            </FieldRow>
             {node.textOutline && (
               <>
                 <ColorField label="描边色" value={node.textOutline.color} onChange={(v) => {
                   patchNodeOnBridge({ textOutline: { ...node.textOutline!, color: v } });
                 }} />
-                <div className="flex items-center gap-2">
-                  <span className="text-[12px] text-[#6c7086] w-10">距离X</span>
-                  <input type="number" value={node.textOutline.distance[0]} step={0.5}
-                    onChange={(e) => patchNodeOnBridge({ textOutline: { ...node.textOutline!, distance: [Number(e.target.value), node.textOutline!.distance[1]] } })}
-                    className="w-14 text-sm text-center" />
-                  <span className="text-[12px] text-[#6c7086] w-3">Y</span>
-                  <input type="number" value={node.textOutline.distance[1]} step={0.5}
-                    onChange={(e) => patchNodeOnBridge({ textOutline: { ...node.textOutline!, distance: [node.textOutline!.distance[0], Number(e.target.value)] } })}
-                    className="w-14 text-sm text-center" />
-                </div>
+                <FieldRow label="距离">
+                  <div className="property-dual-inputs">
+                    <input type="number" value={node.textOutline.distance[0]} step={0.5}
+                      onChange={(e) => patchNodeOnBridge({ textOutline: { ...node.textOutline!, distance: [Number(e.target.value), node.textOutline!.distance[1]] } })}
+                      className="property-inline-number" />
+                    <input type="number" value={node.textOutline.distance[1]} step={0.5}
+                      onChange={(e) => patchNodeOnBridge({ textOutline: { ...node.textOutline!, distance: [node.textOutline!.distance[0], Number(e.target.value)] } })}
+                      className="property-inline-number" />
+                  </div>
+                </FieldRow>
               </>
             )}
 
             {/* Shadow */}
-            <div className="flex items-center justify-between mt-2">
-              <span className="text-[13px] text-[#a6adc8]">阴影</span>
-              <button
+            <FieldRow label="阴影" className="mt-2">
+              <ToggleButton
+                active={!!node.textShadow}
                 onClick={() => {
                   patchNodeOnBridge({
                     textShadow: node.textShadow ? undefined : { color: '#000000', distance: [1, -1] },
                   });
                 }}
-                className={`px-3 py-0.5 text-[13px] rounded ${node.textShadow ? 'bg-[#89b4fa] text-[#1e1e2e]' : 'bg-[#313244] text-[#a6adc8]'}`}
-              >
-                {node.textShadow ? '已开启' : '关闭'}
-              </button>
-            </div>
+                activeText="已开启"
+                inactiveText="关闭"
+                tone="blue"
+              />
+            </FieldRow>
             {node.textShadow && (
               <>
                 <ColorField label="阴影色" value={node.textShadow.color} onChange={(v) => {
                   patchNodeOnBridge({ textShadow: { ...node.textShadow!, color: v } });
                 }} />
-                <div className="flex items-center gap-2">
-                  <span className="text-[12px] text-[#6c7086] w-10">距离X</span>
-                  <input type="number" value={node.textShadow.distance[0]} step={0.5}
-                    onChange={(e) => patchNodeOnBridge({ textShadow: { ...node.textShadow!, distance: [Number(e.target.value), node.textShadow!.distance[1]] } })}
-                    className="w-14 text-sm text-center" />
-                  <span className="text-[12px] text-[#6c7086] w-3">Y</span>
-                  <input type="number" value={node.textShadow.distance[1]} step={0.5}
-                    onChange={(e) => patchNodeOnBridge({ textShadow: { ...node.textShadow!, distance: [node.textShadow!.distance[0], Number(e.target.value)] } })}
-                    className="w-14 text-sm text-center" />
-                </div>
+                <FieldRow label="距离">
+                  <div className="property-dual-inputs">
+                    <input type="number" value={node.textShadow.distance[0]} step={0.5}
+                      onChange={(e) => patchNodeOnBridge({ textShadow: { ...node.textShadow!, distance: [Number(e.target.value), node.textShadow!.distance[1]] } })}
+                      className="property-inline-number" />
+                    <input type="number" value={node.textShadow.distance[1]} step={0.5}
+                      onChange={(e) => patchNodeOnBridge({ textShadow: { ...node.textShadow!, distance: [node.textShadow!.distance[0], Number(e.target.value)] } })}
+                      className="property-inline-number" />
+                  </div>
+                </FieldRow>
               </>
             )}
           </Section>

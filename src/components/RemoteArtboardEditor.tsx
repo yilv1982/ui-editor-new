@@ -198,12 +198,16 @@ function serialize(artboards: RuntimeArtboard[]): PersistedArtboard[] {
 }
 
 function findVisibleNode(snapshot: SnapshotRecord | null, rootNodeId: string | null): string | null {
+  // 用画板尺寸（viewport，缺省回退 SNAPSHOT 常量）判定“铺满画板的根/panel 框”，
+  // 而非大图尺寸——bridge 扩展渲染时大图远大于画板。
+  const vw = snapshot?.viewport?.width && snapshot.viewport.width > 0 ? snapshot.viewport.width : SNAPSHOT_WIDTH;
+  const vh = snapshot?.viewport?.height && snapshot.viewport.height > 0 ? snapshot.viewport.height : SNAPSHOT_HEIGHT;
   const visible = snapshot?.bboxes.find((box) => (
     box.activeInHierarchy &&
     box.width > 4 &&
     box.height > 4 &&
-    box.width < SNAPSHOT_WIDTH * 0.98 &&
-    box.height < SNAPSHOT_HEIGHT * 0.98
+    box.width < vw * 0.98 &&
+    box.height < vh * 0.98
   ));
   return visible?.nodeId ?? rootNodeId;
 }
@@ -394,6 +398,21 @@ export default function RemoteArtboardEditor() {
     if (frameRect.width <= 0 || frameRect.height <= 0) return 0.4;
     return Math.min(frameRect.width / SNAPSHOT_WIDTH, frameRect.height / SNAPSHOT_HEIGHT, 1.1);
   }, [frameRect]);
+  // bridge 为捕捉画板外内容会扩展渲染：snapshot.image 是大图，snapshot.viewport 标出真正
+  // SNAPSHOT_WIDTH×SNAPSHOT_HEIGHT 画板区域在大图里的位置。bbox 坐标都在“大图坐标系”。
+  // 缺省（UGUI/未扩展）回退到画板原点，使大图系与画板系重合。
+  const viewport = useMemo(() => {
+    const v = activeArtboard?.snapshot?.viewport;
+    if (v && v.width > 0 && v.height > 0) return v;
+    return { x: 0, y: 0, width: SNAPSHOT_WIDTH, height: SNAPSHOT_HEIGHT };
+  }, [activeArtboard]);
+  const snapshotSize = useMemo(() => {
+    const s = activeArtboard?.snapshot;
+    return {
+      width: s && s.width > 0 ? s.width : SNAPSHOT_WIDTH,
+      height: s && s.height > 0 ? s.height : SNAPSHOT_HEIGHT,
+    };
+  }, [activeArtboard]);
   const filteredPrefabs = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     const list = keyword
@@ -782,9 +801,10 @@ export default function RemoteArtboardEditor() {
     const frame = frameRef.current?.querySelector('[data-remote-snapshot-frame]') as HTMLElement | null;
     if (!frame || displayScale <= 0) return null;
     const rect = frame.getBoundingClientRect();
+    // 框内像素 → 画板系 → 大图系（加 viewport 偏移），与 bbox.x/y 同系，供 pickBboxAtPoint 命中。
     return {
-      x: (event.clientX - rect.left) / displayScale,
-      y: (event.clientY - rect.top) / displayScale,
+      x: (event.clientX - rect.left) / displayScale + viewport.x,
+      y: (event.clientY - rect.top) / displayScale + viewport.y,
     };
   }
 
@@ -876,8 +896,9 @@ export default function RemoteArtboardEditor() {
     const parentId = activeArtboard.selectedNodeId || activeArtboard.rootNodeId || null;
     runNodeOperation('插入 UI', (artboard) => editorBridgeClient.insertPrefab(artboard.sessionId, prefabPath, {
       parentId,
-      x: Math.round(point.x - SNAPSHOT_WIDTH / 2),
-      y: Math.round(SNAPSHOT_HEIGHT / 2 - point.y),
+      // point 是大图系；画板中心在大图系为 viewport 中心，换算成相对画板中心的 NGUI 坐标。
+      x: Math.round(point.x - (viewport.x + viewport.width / 2)),
+      y: Math.round((viewport.y + viewport.height / 2) - point.y),
     }, { skipSnapshot: false }));
   }
 
@@ -1016,7 +1037,19 @@ export default function RemoteArtboardEditor() {
           <div ref={frameRef} className="relative min-h-0 flex-1 overflow-hidden bg-[#11111b] p-4" onDragOver={(event) => event.preventDefault()} onDrop={onCanvasDrop}>
             {activeArtboard?.snapshotUrl ? (
               <div data-remote-snapshot-frame data-testid="remote-snapshot-frame" className="relative mx-auto overflow-hidden border border-[#313244] bg-[#162d3f] shadow-2xl" style={snapshotStyle} onPointerDown={onSnapshotPointerDown} onPointerMove={onSnapshotPointerMove} onPointerUp={onSnapshotPointerUp} onPointerCancel={onSnapshotPointerUp}>
-                <img src={activeArtboard.snapshotUrl} alt="" draggable={false} onLoad={onSnapshotImageLoad} className="absolute inset-0 h-full w-full select-none" />
+                <img
+                  src={activeArtboard.snapshotUrl}
+                  alt=""
+                  draggable={false}
+                  onLoad={onSnapshotImageLoad}
+                  className="absolute max-w-none select-none"
+                  style={{
+                    left: -viewport.x * displayScale,
+                    top: -viewport.y * displayScale,
+                    width: snapshotSize.width * displayScale,
+                    height: snapshotSize.height * displayScale,
+                  }}
+                />
                 {activeBboxes.map((box) => {
                   const selected = box.nodeId === activeArtboard.selectedNodeId;
                   const dx = drag?.nodeId === box.nodeId ? drag.deltaX * displayScale : 0;
@@ -1027,8 +1060,8 @@ export default function RemoteArtboardEditor() {
                       data-testid="remote-bbox"
                       className="absolute border bg-transparent"
                       style={{
-                        left: box.x * displayScale + dx,
-                        top: box.y * displayScale + dy,
+                        left: (box.x - viewport.x) * displayScale + dx,
+                        top: (box.y - viewport.y) * displayScale + dy,
                         width: box.width * displayScale,
                         height: box.height * displayScale,
                         borderColor: selected ? '#f9e2af' : 'rgba(137, 180, 250, 0.55)',

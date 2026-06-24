@@ -8,6 +8,7 @@ export const ASSET_PATHS = {
   atlas:        'Assets/HotRes2/UIs/Textures',
   texture:      'Assets/HotRes2/Textures',
   prefab:       'Assets/HotRes2/UIs/Prefabs',
+  legacyPrefabs: ['Assets/HotRes'],
   commonPart:   'Assets/HotRes2/UIs/Prefabs/UICommons',
   font:         'Assets/HotRes2/Fonts',
   bridgeScript: 'Assets/Editor/UIEditorNew/UIEditorNewBridgeSync.cs',

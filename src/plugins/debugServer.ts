@@ -29,12 +29,25 @@ interface DebugReport {
   createdAt: string;
 }
 
+interface DebugLog {
+  id: number;
+  channel: string;
+  event: string;
+  payload: unknown;
+  clientId?: string;
+  at?: string;
+  perfMs?: number;
+  createdAt: string;
+}
+
 const commands: DebugCommand[] = [];
 const results: DebugResult[] = [];
 const reports: DebugReport[] = [];
+const logs: DebugLog[] = [];
 let nextCommandId = 1;
 let nextReportId = 1;
-const MAX_ITEMS = 50;
+let nextLogId = 1;
+const MAX_ITEMS = 500;
 
 function trim<T>(list: T[]) {
   while (list.length > MAX_ITEMS) list.shift();
@@ -77,6 +90,15 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? value as Record<string, unknown> : {};
 }
 
+function shortJson(value: unknown): string {
+  try {
+    const text = JSON.stringify(value);
+    return text.length > 1400 ? `${text.slice(0, 1400)}...` : text;
+  } catch {
+    return '[unserializable]';
+  }
+}
+
 export function debugServerPlugin(): Plugin {
   return {
     name: 'uieditor-debug-server',
@@ -91,8 +113,10 @@ export function debugServerPlugin(): Plugin {
           commands,
           lastReport: reports[reports.length - 1] ?? null,
           lastResult: results[results.length - 1] ?? null,
+          lastLog: logs[logs.length - 1] ?? null,
           reports,
           results,
+          logs,
         });
       });
 
@@ -191,10 +215,37 @@ export function debugServerPlugin(): Plugin {
         }
       });
 
+      server.middlewares.use('/api/uieditor-debug/log', async (req, res) => {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+        try {
+          const body = asRecord(await readJson(req));
+          const item: DebugLog = {
+            id: nextLogId++,
+            channel: typeof body.channel === 'string' ? body.channel : 'runtime',
+            event: typeof body.event === 'string' ? body.event : 'log',
+            payload: body.payload,
+            clientId: typeof body.clientId === 'string' ? body.clientId : undefined,
+            at: typeof body.at === 'string' ? body.at : undefined,
+            perfMs: typeof body.perfMs === 'number' ? body.perfMs : undefined,
+            createdAt: new Date().toISOString(),
+          };
+          logs.push(item);
+          trim(logs);
+          console.log(`[uieditor-log][${item.channel}] ${item.event} ${shortJson(item.payload)}`);
+          sendJson(res, 200, { ok: true, id: item.id });
+        } catch (err: unknown) {
+          sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+      });
+
       server.middlewares.use('/api/uieditor-debug/reset', (_req, res) => {
         commands.length = 0;
         results.length = 0;
         reports.length = 0;
+        logs.length = 0;
         sendJson(res, 200, { ok: true });
       });
 

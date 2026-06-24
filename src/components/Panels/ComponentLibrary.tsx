@@ -42,7 +42,7 @@ export default function ComponentLibrary() {
   };
 
   return (
-    <div className="w-56 bg-[#1e1e2e] border-r border-[#313244] flex flex-col h-full">
+    <div className="w-full bg-[#1e1e2e] flex flex-col h-full">
       {/* 标题 */}
       <div className="px-3 py-2 border-b border-[#313244]">
         <h3 className="text-sm font-medium text-[#cdd6f4]">组件库</h3>

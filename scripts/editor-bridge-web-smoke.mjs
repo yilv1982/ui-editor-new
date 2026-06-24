@@ -13,7 +13,7 @@ const ROOT = path.resolve(__dirname, '..');
 function parseArgs(argv) {
   const args = {
     url: 'http://127.0.0.1:4105/',
-    bridgeUrl: 'http://127.0.0.1:8082',
+    bridgeUrl: 'http://127.0.0.1:18082',
     prefab: 'UICommons/UIAlert2.prefab',
     targetPath: 'dl2_ui_p_btns_002/okBtn/okText',
     text: 'Pilot OK',

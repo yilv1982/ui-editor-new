@@ -20,7 +20,7 @@
 详见 `client-bridge-isolation.md`。API 层必须遵守以下约束：
 
 - 老 UIEditor 继续占用 `Assets/Editor/UIEditor/`、`UIEditor...` 类名、`UIEditor/...` 菜单和 `8081` 端口。
-- `UIEditor_new` 使用 `Assets/Editor/UIEditorNew/`、`UIEditorNew...` 类名、`UIEditorNew/...` 菜单和 `8082` 端口。
+- `UIEditor_new` 使用 `Assets/Editor/UIEditorNew/`、`UIEditorNew...` 类名、`UIEditorNew/...` 菜单和 `18082` 端口。
 - `UIEditor_new` 不向 `UIEditorCorsProxy.LastSyncJson` 写数据，不调用老桥 `/sync-preview` 或 `/sync-incremental`，也不复用老桥的 HTTP listener。
 - 如需复用老桥代码，只能复制无状态算法并改名；不能共享静态状态、端口、临时目录或保存逻辑。
 
@@ -40,7 +40,7 @@
 默认地址：
 
 ```text
-http://127.0.0.1:8082
+http://127.0.0.1:18082
 ```
 
 通用成功响应：
@@ -738,7 +738,7 @@ http://127.0.0.1:8082
 ### Unity Editor 侧
 
 - [x] 新增独立目录 `Assets/Editor/UIEditorNew/`，不得修改 `Assets/Editor/UIEditor/` 作为新流程实现。
-- [x] 新增 `UIEditorNewBridgeServer`，监听 `8082`，菜单前缀使用 `UIEditorNew/...`，健康检查返回 `UIEditorNewBridge`。
+- [x] 新增 `UIEditorNewBridgeServer`，监听 `18082`，菜单前缀使用 `UIEditorNew/...`，健康检查返回 `UIEditorNewBridge`。
 - [x] 从老 `UIEditorReferenceCapture` 复制 Prefab 归一化、实例化、Canvas/Camera/RenderTexture 渲染思路，形成独立 snapshot service。
 - [x] 建立 session 管理：source prefab、working prefab、mode、revision、baseline 快照、临时对象清理。
 - [x] 实现 `exportNodeTree`：导出 fileID、路径、父子关系、RectTransform、组件摘要、白名单/保护字段。
@@ -747,12 +747,12 @@ http://127.0.0.1:8082
 - [~] 实现 `validateProtectedDiff`：已从逐行 YAML 白名单升级为 MVP 结构签名校验，比较对象类型、脚本引用、事件签名、组件/层级关系和非白名单 PrefabModification；后续仍需扩展字段级/组件级报告。
 - [x] 实现 `savePrefab`：保留截图 MVP 的临时副本保存接口。
 - [x] 实现 `saveArtboard`：新 UI 保存到用户指定路径；已有 UI 在 target 为空时写回 source Prefab，保存前执行 protected diff。
-- [x] 验证老 `8081` 桥和新 `8082` 桥可同时存在，Unity 编译无重复类名冲突。
+- [x] 验证老 `8081` 桥和新 `18082` 桥可同时存在，Unity 编译无重复类名冲突。
 
 ### Web 侧
 
 - [x] 新增 `EditorBridgeClient`，替代默认主链路中的 `UnityBridge.ts`。
-- [x] `EditorBridgeClient` 默认读取 `editorBridgeUrl`，目标为 `http://127.0.0.1:8082`，不连接老 `8081` 桥。
+- [x] `EditorBridgeClient` 默认读取 `editorBridgeUrl`，目标为 `http://127.0.0.1:18082`，不连接老 `8081` 桥。
 - [x] 新增截图底图组件：显示 `renderSnapshot` 图片，按 bbox 渲染 hover/selection/drag。
 - [x] 新增 `RemoteArtboardEditor` 主入口：画板栏、Prefab 列表、截图叠加画布、图层树、属性面板、保存/关闭和撤销重做工具条。
 - [x] 新增基础属性面板：对选中节点提交显隐、位置、尺寸、文本、字号/颜色、图片引用等白名单操作。
@@ -768,7 +768,7 @@ http://127.0.0.1:8082
 ## MVP 验收
 
 - [x] 不恢复 `/unity/Build` 也能看到 Unity 真值截图。
-- [x] 不占用或修改老 UIEditor 的 `8081` 桥接服务；新桥监听 `8082`。
+- [x] 不占用或修改老 UIEditor 的 `8081` 桥接服务；新桥监听 `18082`。
 - [x] Web 能基于 Unity bbox 选择节点并拖动 overlay。
 - [x] 松手后 Web 先乐观移动 overlay，Unity 异步应用 patch，再刷新真值截图。
 - [x] Web 属性面板能提交基础视觉字段 patch，并通过 `UIAlert2/okText` 的 `Text.text` 与 `Text.color` 外部 headless 烟测。

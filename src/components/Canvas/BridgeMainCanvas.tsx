@@ -6,15 +6,16 @@ import type { BboxRecord } from '../../services/EditorBridgeClient';
 import {
   ensureActiveBridgeArtboard,
   createWidgetNodeOnBridge,
-  insertPrefabIntoActiveArtboard,
+  insertPrefabIntoArtboard,
   isApplyingBridgeState,
   moveNodeOnBridge,
-  openPrefabInNewArtboard,
+  refreshActiveBridgeSnapshot,
   reparentNodeOnBridge,
   resizeNodeOnBridge,
   syncNodeVisualDelta,
 } from '../../services/BridgeArtboardStore';
 import { registerDropTarget } from '../../utils/customDrag';
+import { debugLog } from '../../utils/debugLog';
 import ArtboardsOverlay from './ArtboardsOverlay';
 import ArtboardSidebarOverlay from './ArtboardSidebarOverlay';
 import AnnotationListDialog from '../Panels/AnnotationListDialog';
@@ -25,7 +26,12 @@ import type { PreviewDraft } from './AnnotationOverlay';
 import SceneToolbar from './SceneToolbar';
 import TextInlineEditor from './TextInlineEditor';
 
-const TITLE_BAR_H = 24;
+/**
+ * BridgeMainCanvas is the only main editor canvas.
+ * It renders Unity Editor Bridge snapshots and keeps old shell interactions
+ * such as pan/zoom, bbox selection, rulers, guides, measuring, annotations,
+ * and scene transform handles.
+ */
 const RULER_SIZE = 24;
 const RULER_BG = '#1e1e2e';
 const RULER_TEXT = '#6c7086';
@@ -261,7 +267,7 @@ function computeTransformPreview(session: TransformSession, clientX: number, cli
   };
 }
 
-export default function BridgeSnapshotCanvas() {
+export default function BridgeMainCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const hRulerRef = useRef<HTMLCanvasElement>(null);
   const vRulerRef = useRef<HTMLCanvasElement>(null);
@@ -282,6 +288,7 @@ export default function BridgeSnapshotCanvas() {
   const annDraftRef = useRef<{ startDesign: { x: number; y: number }; type: 'arrow' | 'rect' | 'dimension' } | null>(null);
   const dblClickRef = useRef<{ nodeId: string; time: number } | null>(null);
   const transformRef = useRef<TransformSession | null>(null);
+  const lastViewportArtboardIdRef = useRef<string | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -304,6 +311,15 @@ export default function BridgeSnapshotCanvas() {
   const snapshot = activeArtboard?.bridgeSnapshot ?? null;
   const snapshotUrl = activeArtboard?.bridgeSnapshotUrl ?? null;
   const selectedId = state.selectedIds[0] ?? null;
+  const snapshotViewport = useMemo(() => {
+    const viewport = snapshot?.viewport;
+    return {
+      x: viewport?.x ?? 0,
+      y: viewport?.y ?? 0,
+      width: viewport?.width ?? state.previewWidth,
+      height: viewport?.height ?? state.previewHeight,
+    };
+  }, [snapshot?.viewport, state.previewWidth, state.previewHeight]);
   const selectedBox = useMemo(() => {
     if (!snapshot || !selectedId) return null;
     return snapshot.bboxes.find((box: BboxRecord) => box.nodeId === selectedId) ?? null;
@@ -320,6 +336,10 @@ export default function BridgeSnapshotCanvas() {
   const screenY = state.canvasY + artboardY * state.canvasScale;
   const screenW = state.previewWidth * state.canvasScale;
   const screenH = state.previewHeight * state.canvasScale;
+  const snapshotImageW = (snapshot?.width ?? state.previewWidth) * state.canvasScale;
+  const snapshotImageH = (snapshot?.height ?? state.previewHeight) * state.canvasScale;
+  const snapshotScreenX = screenX - snapshotViewport.x * state.canvasScale;
+  const snapshotScreenY = screenY - snapshotViewport.y * state.canvasScale;
   const editingTextId = state.editingTextId;
   const annotationTool = state.annotationTool;
 
@@ -358,6 +378,26 @@ export default function BridgeSnapshotCanvas() {
     };
   }, [clientToWorld]);
 
+  const focusArtboardInViewport = useCallback((artboard = activeArtboard) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!artboard || !rect || rect.width <= 0 || rect.height <= 0) return false;
+    const st = useEditorStore.getState();
+    const scale = st.canvasScale;
+    const nextX = rect.width / 2 - (artboard.x + artboard.width / 2) * scale;
+    const nextY = rect.height / 2 - (artboard.y + artboard.height / 2) * scale;
+    st.setCanvasTransform(nextX, nextY, scale);
+    debugLog('viewport', 'focus-artboard', {
+      artboardId: artboard.id,
+      artboardName: artboard.name,
+      canvas: {
+        x: Math.round(nextX),
+        y: Math.round(nextY),
+        scale,
+      },
+    });
+    return true;
+  }, [activeArtboard]);
+
   const hitNodeAtClient = useCallback((clientX: number, clientY: number): BboxRecord | null => {
     const st = useEditorStore.getState();
     const activePage = st.pages.find((item) => item.id === st.activePageId);
@@ -366,8 +406,8 @@ export default function BridgeSnapshotCanvas() {
     if (!active || !boxSnapshot) return null;
     const point = clientToActiveLocal(clientX, clientY);
     if (!point) return null;
-    return pickBboxAtPoint(boxSnapshot.bboxes, point.x, point.y, active.bridgeRootNodeId);
-  }, [clientToActiveLocal]);
+    return pickBboxAtPoint(boxSnapshot.bboxes, point.x + snapshotViewport.x, point.y + snapshotViewport.y, active.bridgeRootNodeId);
+  }, [clientToActiveLocal, snapshotViewport.x, snapshotViewport.y]);
 
   const beginTransform = useCallback((event: React.PointerEvent<HTMLElement | SVGElement>, box: BboxRecord, handle: TransformHandle) => {
     const st = useEditorStore.getState();
@@ -379,8 +419,8 @@ export default function BridgeSnapshotCanvas() {
     st.setSelectedIds([box.nodeId]);
     const pivotX = node.pivot?.x ?? 0.5;
     const pivotY = node.pivot?.y ?? 0.5;
-    const centerClientX = screenX + (box.x + box.width / 2) * st.canvasScale;
-    const centerClientY = screenY + (box.y + box.height / 2) * st.canvasScale;
+    const centerClientX = snapshotScreenX + (box.x + box.width / 2) * st.canvasScale;
+    const centerClientY = snapshotScreenY + (box.y + box.height / 2) * st.canvasScale;
     const latest: TransformPreview = {
       nodeId: box.nodeId,
       boxX: box.x,
@@ -420,7 +460,7 @@ export default function BridgeSnapshotCanvas() {
     } catch {
       // Ignore capture failures; the parent canvas still receives bubbled pointer events.
     }
-  }, [screenX, screenY]);
+  }, [snapshotScreenX, snapshotScreenY]);
 
   const downloadSnapshot = useCallback(() => {
     const artboard = useEditorStore.getState().pages
@@ -443,6 +483,14 @@ export default function BridgeSnapshotCanvas() {
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
   }, [activeArtboard?.id, activeArtboard?.bridgeSessionId, loading]);
+
+  useEffect(() => {
+    if (!activeArtboard?.id) return;
+    if (lastViewportArtboardIdRef.current === activeArtboard.id) return;
+    if (focusArtboardInViewport(activeArtboard)) {
+      lastViewportArtboardIdRef.current = activeArtboard.id;
+    }
+  }, [activeArtboard, containerSize.width, containerSize.height, focusArtboardInViewport]);
 
   useEffect(() => {
     return useEditorStore.subscribe((nextState, prevState) => {
@@ -500,30 +548,73 @@ export default function BridgeSnapshotCanvas() {
         const activePage = st.pages.find((item) => item.id === st.activePageId);
         const artboards = activePage?.artboards ?? [];
         const prefabPath = typeof data?.relPath === 'string' ? data.relPath : '';
-        const titleHit = type === 'application/uieditor-prefab' ? artboards.find((artboard) => {
+        const rect = el.getBoundingClientRect();
+        const localClientX = clientX - rect.left;
+        const localClientY = clientY - rect.top;
+        const targetArtboard = artboards.find((artboard) => {
           const x = st.canvasX + artboard.x * st.canvasScale;
           const y = st.canvasY + artboard.y * st.canvasScale;
           const w = st.previewWidth * st.canvasScale;
-          return clientX >= x && clientX <= x + w && clientY >= y - TITLE_BAR_H && clientY <= y;
-        }) : null;
-        if (titleHit) {
-          if (!prefabPath) return;
-          void openPrefabInNewArtboard(prefabPath).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+          const h = st.previewHeight * st.canvasScale;
+          return localClientX >= x && localClientX <= x + w && localClientY >= y && localClientY <= y + h;
+        });
+        const active = targetArtboard ?? activePage?.artboards.find((item) => item.id === st.activeArtboardId);
+        debugLog('canvas-drop', 'hit-test', {
+          type,
+          prefabPath,
+          client: { x: clientX, y: clientY },
+          localClient: { x: Math.round(localClientX), y: Math.round(localClientY) },
+          activePageId: activePage?.id,
+          activeArtboardId: st.activeArtboardId,
+          targetArtboardId: targetArtboard?.id,
+          targetArtboardName: targetArtboard?.name,
+          artboardCount: artboards.length,
+          canvas: {
+            x: Math.round(st.canvasX),
+            y: Math.round(st.canvasY),
+            scale: st.canvasScale,
+            previewWidth: st.previewWidth,
+            previewHeight: st.previewHeight,
+          },
+        });
+        if (!active || !targetArtboard) {
+          debugLog('canvas-drop', 'ignored-no-artboard-hit', {
+            type,
+            prefabPath,
+            activeArtboardId: st.activeArtboardId,
+            targetArtboardId: targetArtboard?.id,
+          });
           return;
         }
-        const active = activePage?.artboards.find((item) => item.id === st.activeArtboardId);
-        if (!active) return;
         const ax = st.canvasX + active.x * st.canvasScale;
         const ay = st.canvasY + active.y * st.canvasScale;
-        const aw = st.previewWidth * st.canvasScale;
-        const ah = st.previewHeight * st.canvasScale;
-        if (clientX < ax || clientX > ax + aw || clientY < ay || clientY > ay + ah) return;
         const point = {
-          x: (clientX - ax) / st.canvasScale,
-          y: (clientY - ay) / st.canvasScale,
+          x: (localClientX - ax) / st.canvasScale,
+          y: (localClientY - ay) / st.canvasScale,
         };
-        if ((type === 'application/uieditor-prefab' || type === 'application/component') && prefabPath) {
-          void insertPrefabIntoActiveArtboard(prefabPath, point).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+        debugLog('canvas-drop', 'resolved-target', {
+          type,
+          prefabPath,
+          artboardId: active.id,
+          artboardName: active.name,
+          point: { x: Math.round(point.x), y: Math.round(point.y) },
+          workingPrefabPath: active.bridgeWorkingPrefabPath,
+          sourcePrefabPath: active.sourcePrefabPath,
+        });
+        if (type === 'application/uieditor-prefab' || type === 'application/component') {
+          if (!prefabPath) {
+            debugLog('canvas-drop', 'ignored-missing-prefab-path', { type, dataName: typeof data?.name === 'string' ? data.name : undefined });
+            setError('这个组件没有 Prefab 路径，不能插入画板');
+            return;
+          }
+          void insertPrefabIntoArtboard(active.id, prefabPath, point, activePage?.id).catch((err) => {
+            debugLog('canvas-drop', 'insert-prefab-error', {
+              prefabPath,
+              artboardId: active.id,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            setError(err instanceof Error ? err.message : String(err));
+          });
           return;
         }
         if (type === 'application/atlas-image') {
@@ -538,7 +629,10 @@ export default function BridgeSnapshotCanvas() {
             height: 160,
             parentId: active.bridgeRootNodeId || undefined,
             spritePath: typeof data?.path === 'string' ? data.path : undefined,
-          }).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+          }).catch((err) => {
+            debugLog('canvas-drop', 'create-image-error', { error: err instanceof Error ? err.message : String(err) });
+            setError(err instanceof Error ? err.message : String(err));
+          });
         }
       },
     });
@@ -656,12 +750,12 @@ export default function BridgeSnapshotCanvas() {
   const selectedScreenBox = useMemo(() => {
     if (!selectedBox) return null;
     return {
-      x: screenX + selectedBox.x * state.canvasScale,
-      y: screenY + selectedBox.y * state.canvasScale,
+      x: snapshotScreenX + selectedBox.x * state.canvasScale,
+      y: snapshotScreenY + selectedBox.y * state.canvasScale,
       width: selectedBox.width * state.canvasScale,
       height: selectedBox.height * state.canvasScale,
     };
-  }, [screenX, screenY, selectedBox, state.canvasScale]);
+  }, [snapshotScreenX, snapshotScreenY, selectedBox, state.canvasScale]);
 
   useEffect(() => {
     const { width: cw, height: ch } = containerSize;
@@ -855,7 +949,9 @@ export default function BridgeSnapshotCanvas() {
       return;
     }
 
-    const hit = snapshot ? pickBboxAtPoint(snapshot.bboxes, point.x, point.y, activeArtboard?.bridgeRootNodeId) : null;
+    const hit = snapshot
+      ? pickBboxAtPoint(snapshot.bboxes, point.x + snapshotViewport.x, point.y + snapshotViewport.y, activeArtboard?.bridgeRootNodeId)
+      : null;
     if (!hit) {
       st.setSelectedIds([]);
       measureRef.current = { startX: event.clientX, startY: event.clientY, measuring: false };
@@ -897,7 +993,7 @@ export default function BridgeSnapshotCanvas() {
       deltaX: 0,
       deltaY: 0,
     };
-  }, [activeArtboard?.bridgeRootNodeId, annotationTool, clientToActiveLocal, hitNodeAtClient, snapshot]);
+  }, [activeArtboard?.bridgeRootNodeId, annotationTool, clientToActiveLocal, hitNodeAtClient, snapshot, snapshotViewport.x, snapshotViewport.y]);
 
   const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const st = useEditorStore.getState();
@@ -1088,7 +1184,12 @@ export default function BridgeSnapshotCanvas() {
           const top = Math.min(start.y, end.y);
           const bottom = Math.max(start.y, end.y);
           const st = useEditorStore.getState();
-          const hits = pickBboxesInRect(snapshot.bboxes, { left, right, top, bottom }, st.nodes, activeArtboard?.bridgeRootNodeId);
+          const hits = pickBboxesInRect(snapshot.bboxes, {
+            left: left + snapshotViewport.x,
+            right: right + snapshotViewport.x,
+            top: top + snapshotViewport.y,
+            bottom: bottom + snapshotViewport.y,
+          }, st.nodes, activeArtboard?.bridgeRootNodeId);
           if (event.shiftKey) {
             const merged = [...st.selectedIds];
             for (const id of hits) {
@@ -1104,7 +1205,7 @@ export default function BridgeSnapshotCanvas() {
         }
       }
     }
-  }, [activeArtboard?.bridgeRootNodeId, clientToActiveLocal, clientToWorld, snapshot]);
+  }, [activeArtboard?.bridgeRootNodeId, clientToActiveLocal, clientToWorld, snapshot, snapshotViewport.x, snapshotViewport.y]);
 
   const handlePointerCancel = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     safeReleasePointerCapture(event.currentTarget, event.pointerId);
@@ -1139,10 +1240,14 @@ export default function BridgeSnapshotCanvas() {
       onMouseLeave={handleMouseLeave}
     >
       <div
-        className="absolute bg-[#162d3f] shadow-2xl"
+        className="pointer-events-none absolute bg-[#162d3f] shadow-2xl"
         style={{ left: screenX, top: screenY, width: screenW, height: screenH }}
-      >
-        {snapshotUrl ? (
+      />
+      {snapshotUrl ? (
+        <div
+          className="pointer-events-none absolute"
+          style={{ left: snapshotScreenX, top: snapshotScreenY, width: snapshotImageW, height: snapshotImageH }}
+        >
           <img
             src={snapshotUrl}
             alt=""
@@ -1150,12 +1255,21 @@ export default function BridgeSnapshotCanvas() {
             draggable={false}
             style={{ filter: state.grayscaleMode ? 'grayscale(1)' : undefined }}
           />
-        ) : (
+        </div>
+      ) : (
+        <div
+          className="absolute bg-[#162d3f] shadow-2xl"
+          style={{ left: screenX, top: screenY, width: screenW, height: screenH }}
+        >
           <div className="flex h-full w-full items-center justify-center text-sm text-[#a6adc8]">
             {loading ? '正在读取 Unity 临时 Prefab...' : '等待 Unity Bridge 截图'}
           </div>
-        )}
-      </div>
+        </div>
+      )}
+      <div
+        className="pointer-events-none absolute border border-[#89b4fa]/70 shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
+        style={{ left: screenX, top: screenY, width: screenW, height: screenH }}
+      />
 
       {selectedBoxes.map((box: BboxRecord) => {
         const offset = dragPreview?.nodeId === box.nodeId ? dragPreview : null;
@@ -1183,8 +1297,8 @@ export default function BridgeSnapshotCanvas() {
             data-node-id={box.nodeId}
             className="pointer-events-none absolute"
             style={{
-              left: screenX + localX * state.canvasScale,
-              top: screenY + localY * state.canvasScale,
+              left: snapshotScreenX + localX * state.canvasScale,
+              top: snapshotScreenY + localY * state.canvasScale,
               width: screenBoxW,
               height: screenBoxH,
               transform: t && state.sceneTool === 'rotate' ? `rotate(${t.rotation}deg)` : undefined,
@@ -1392,6 +1506,7 @@ export default function BridgeSnapshotCanvas() {
           onChange={(event) => {
             const [w, h] = event.target.value.split('x').map(Number);
             useEditorStore.getState().setPreviewResolution(w, h);
+            void refreshActiveBridgeSnapshot(w, h).catch((err) => setError(err instanceof Error ? err.message : String(err)));
           }}
           className="rounded border border-[#45475a] bg-[#313244] px-1.5 py-1 text-[13px] text-[#cdd6f4] outline-none"
           title="预览分辨率"

@@ -9,7 +9,7 @@ const THUMBNAIL_SIZE = 256;
 
 function parseArgs(argv) {
   const args = {
-    bridgeUrl: 'http://127.0.0.1:8082',
+    bridgeUrl: 'http://127.0.0.1:18082',
     out: path.join(ROOT, '.cache', 'thumbnail-render-smoke', 'latest'),
     samples: ['UICommons/UIBlueBtn.prefab', 'UICommons/UIAlert2.prefab'],
   };

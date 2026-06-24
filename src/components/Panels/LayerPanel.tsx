@@ -6,13 +6,17 @@ import {
   closeBridgeArtboardSession,
   createWidgetNodeOnBridge,
   deleteNodeOnBridge,
-  duplicateBridgeArtboard,
-  duplicateBridgePage,
+  deleteNodesOnBridge,
   duplicateNodesOnBridge,
+  insertPrefabIntoArtboard,
+  insertPrefabIntoNode,
+  openPrefabInNewArtboard,
   renameNodeOnBridge,
   reparentNodesOnBridge,
   setVisibleOnBridge,
 } from '../../services/BridgeArtboardStore';
+import { registerDropTarget } from '../../utils/customDrag';
+import { debugLog } from '../../utils/debugLog';
 
 // 拖拽放置位置指示
 type DropPosition = 'before' | 'inside' | 'after';
@@ -29,7 +33,60 @@ const CollapseContext = createContext<LayerCollapseCtx>({
   setCollapsed: () => {},
 });
 
-const LayerItem = memo(function LayerItem({ nodeId, depth = 0 }: { nodeId: string; depth?: number }) {
+function dropPositionFromClientY(row: HTMLElement | null, clientY: number): DropPosition | null {
+  const rect = row?.getBoundingClientRect();
+  if (!rect) return null;
+  const y = clientY - rect.top;
+  if (y < rect.height * 0.25) return 'before';
+  if (y > rect.height * 0.75) return 'after';
+  return 'inside';
+}
+
+function isPrefabDragType(type: string): boolean {
+  return type === 'application/uieditor-prefab' || type === 'application/component';
+}
+
+function buildReadableNodePath(nodeId: string): string {
+  const state = useEditorStore.getState();
+  // nodeId 是不透明主键（结构索引 "si:..."），不从中解析路径；
+  // 直接顺 parentId 链用节点名重建可读路径。
+  const nodes = state.nodes as Record<string, { name?: string; parentId: string | null } | undefined>;
+  const names: string[] = [];
+  let cursor: string | null = nodeId;
+  const visited = new Set<string>();
+  while (cursor && !visited.has(cursor)) {
+    const id: string = cursor;
+    visited.add(id);
+    const currentNode: { name?: string; parentId: string | null } | undefined = nodes[id];
+    if (!currentNode) break;
+    names.unshift(currentNode.name || id);
+    cursor = currentNode.parentId;
+  }
+  return names.length > 0 ? names.join('/') : nodeId;
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'true');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+  }
+}
+
+const LayerItem = memo(function LayerItem({ nodeId, depth = 0, isArtboardRoot = false }: {
+  nodeId: string;
+  depth?: number;
+  isArtboardRoot?: boolean;
+}) {
   // 拖动节点会修改 x/y，但 LayerItem 渲染不依赖这些字段。
   // 用 useShallow 只在渲染相关字段变化时触发 re-render。
   const node = useEditorStore(useShallow((s) => {
@@ -73,7 +130,90 @@ const LayerItem = memo(function LayerItem({ nodeId, depth = 0 }: { nodeId: strin
     inputfield: 'I',
     rawimage: 'R',
   };
-  const typeIcon = typeIcons[node.type];
+  const typeIcon = isArtboardRoot ? '▣' : typeIcons[node.type];
+  const displayName = isArtboardRoot ? '画板根节点' : node.name;
+
+  const insertPrefabAtNodePosition = useCallback((type: string, data: any, clientY: number) => {
+    if (!isPrefabDragType(type)) return;
+    const prefabPath = typeof data?.relPath === 'string' ? data.relPath : '';
+    const position = dropPositionFromClientY(rowRef.current, clientY) ?? 'inside';
+    debugLog('layer-node-drop', 'received', {
+      type,
+      prefabPath,
+      targetNodeId: nodeId,
+      position,
+    });
+    if (!prefabPath) {
+      debugLog('layer-node-drop', 'ignored-missing-prefab-path', {
+        type,
+        targetNodeId: nodeId,
+        dataName: typeof data?.name === 'string' ? data.name : undefined,
+      });
+      window.alert('这个组件没有 Prefab 路径，不能拖到节点区域');
+      setDropIndicator(null);
+      return;
+    }
+
+    const state = useEditorStore.getState();
+    const target = state.nodes[nodeId];
+    const activePage = state.pages.find((page) => page.id === state.activePageId);
+    const activeArtboard = activePage?.artboards.find((artboard) => artboard.id === state.activeArtboardId);
+    if (!target) {
+      debugLog('layer-node-drop', 'ignored-missing-target', { prefabPath, targetNodeId: nodeId });
+      setDropIndicator(null);
+      return;
+    }
+
+    let parentId = nodeId;
+    let index: number | undefined = target.children.length;
+    if (position !== 'inside') {
+      if (!target.parentId || target.id === activeArtboard?.bridgeRootNodeId) {
+        parentId = target.id;
+        index = position === 'before' ? 0 : target.children.length;
+      } else {
+        parentId = target.parentId;
+        const siblings = state.nodes[parentId]?.children ?? [];
+        const targetIndex = siblings.indexOf(target.id);
+        index = Math.max(0, targetIndex) + (position === 'after' ? 1 : 0);
+      }
+    }
+
+    debugLog('layer-node-drop', 'insert-prefab', {
+      prefabPath,
+      targetNodeId: nodeId,
+      targetIsArtboardRoot: target.id === activeArtboard?.bridgeRootNodeId,
+      position,
+      parentId,
+      index,
+      activeArtboardId: activeArtboard?.id,
+    });
+    void insertPrefabIntoNode(parentId, prefabPath, { index }).catch((err) => {
+      debugLog('layer-node-drop', 'insert-error', {
+        prefabPath,
+        targetNodeId: nodeId,
+        position,
+        parentId,
+        index,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      console.error('插入 UI 失败:', err);
+      window.alert(`插入 UI 失败: ${err instanceof Error ? err.message : String(err)}`);
+    }).finally(() => setDropIndicator(null));
+  }, [nodeId]);
+
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    return registerDropTarget({
+      element: el,
+      onDragOver: (type, _x, y) => {
+        if (!isPrefabDragType(type)) return;
+        setDropIndicator(dropPositionFromClientY(el, y));
+      },
+      onDragLeave: () => setDropIndicator(null),
+      onDrop: (type, data, _x, y) => insertPrefabAtNodePosition(type, data, y),
+    });
+  }, [insertPrefabAtNodePosition]);
 
   // 拖拽开始
   const handleDragStart = (e: React.DragEvent) => {
@@ -101,19 +241,7 @@ const LayerItem = memo(function LayerItem({ nodeId, depth = 0 }: { nodeId: strin
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const rect = rowRef.current?.getBoundingClientRect();
-    if (!rect) return;
-
-    const y = e.clientY - rect.top;
-    const h = rect.height;
-
-    if (y < h * 0.25) {
-      setDropIndicator('before');
-    } else if (y > h * 0.75) {
-      setDropIndicator('after');
-    } else {
-      setDropIndicator('inside'); // 作为子节点
-    }
+    setDropIndicator(dropPositionFromClientY(rowRef.current, e.clientY));
   };
 
   const handleDragLeave = () => setDropIndicator(null);
@@ -262,9 +390,10 @@ const LayerItem = memo(function LayerItem({ nodeId, depth = 0 }: { nodeId: strin
       <div
         ref={rowRef}
         data-layer-node-id={nodeId}
-        title={node.name}
+        data-artboard-root-node={isArtboardRoot ? 'true' : 'false'}
+        title={isArtboardRoot ? `${displayName}: ${node.name}` : node.name}
         className={`flex items-center gap-1 px-1 py-[3px] cursor-pointer text-[13px] select-none
-          hover:bg-[#313244] ${isSelected ? 'bg-[#313244] text-[#89b4fa]' : 'text-[#a6adc8]'}
+          hover:bg-[#313244] ${isSelected ? 'bg-[#313244] text-[#89b4fa]' : (isArtboardRoot ? 'text-[#a6e3a1]' : 'text-[#a6adc8]')}
           ${dropStyle}`}
         style={{ paddingLeft: `${4 + depth * 14}px`, contain: 'layout style' }}
         draggable
@@ -322,7 +451,7 @@ const LayerItem = memo(function LayerItem({ nodeId, depth = 0 }: { nodeId: strin
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span className="whitespace-nowrap flex-1">{node.name}</span>
+          <span className="whitespace-nowrap flex-1">{displayName}</span>
         )}
 
         {/* 可见性 */}
@@ -382,6 +511,21 @@ function ContextMenu({ x, y, nodeId, onAddChild, onRename, onDelete, onDuplicate
 
   const multiSelected = selectedIds.length > 1;
 
+  const copyNodePath = () => {
+    const path = buildReadableNodePath(nodeId);
+    void copyTextToClipboard(path)
+      .then(() => debugLog('layer-context-menu', 'copy-node-path', { nodeId, path }))
+      .catch((err) => {
+        debugLog('layer-context-menu', 'copy-node-path-failed', {
+          nodeId,
+          path,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        window.alert(`复制节点路径失败: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    onClose();
+  };
+
   // 添加同级节点
   const addSibling = (type: 'frame' | 'text' | 'image') => {
     const store = useEditorStore.getState();
@@ -426,15 +570,14 @@ function ContextMenu({ x, y, nodeId, onAddChild, onRename, onDelete, onDuplicate
         <div className="border-t border-[#45475a] my-1" />
 
         <MenuItem label="重命名" shortcut="F2" onClick={() => { onRename(); onClose(); }} />
+        <MenuItem label="复制节点路径" onClick={copyNodePath} />
         <MenuItem label="复制" onClick={onDuplicate} />
         {multiSelected ? (
           <MenuItem
             label={`删除选中 (${selectedIds.length}个)`}
             className="text-[#f38ba8]"
             onClick={() => {
-              void (async () => {
-                for (const id of selectedIds) await deleteNodeOnBridge(id);
-              })();
+              void deleteNodesOnBridge(selectedIds);
               onClose();
             }}
           />
@@ -464,6 +607,7 @@ export default function LayerPanel() {
   const rootIds = useEditorStore((s) => s.rootIds);
   const pages = useEditorStore((s) => s.pages);
   const activePageId = useEditorStore((s) => s.activePageId);
+  const activeArtboardId = useEditorStore((s) => s.activeArtboardId);
   const addPage = useEditorStore((s) => s.addPage);
   const deletePage = useEditorStore((s) => s.deletePage);
   const renamePage = useEditorStore((s) => s.renamePage);
@@ -473,6 +617,7 @@ export default function LayerPanel() {
   const [renamingPageId, setRenamingPageId] = useState<string | null>(null);
   const [renamingValue, setRenamingValue] = useState('');
   const [pageContextMenu, setPageContextMenu] = useState<{ pageId: string; x: number; y: number } | null>(null);
+  const nodeTreeRef = useRef<HTMLDivElement>(null);
 
   const [draggingPageId, setDraggingPageId] = useState<string | null>(null);
   const [pageDropIndicator, setPageDropIndicator] = useState<{ pageId: string; position: 'before' | 'after' } | null>(null);
@@ -509,6 +654,9 @@ export default function LayerPanel() {
   };
 
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
+  const activePage = pages.find((p) => p.id === activePageId);
+  const activeArtboard = activePage?.artboards.find((a) => a.id === activeArtboardId) ?? null;
+  const artboardRootNodeId = activeArtboard?.bridgeRootNodeId ?? rootIds[0] ?? null;
 
   const toggleCollapse = useCallback((id: string) => {
     setCollapsedIds(prev => {
@@ -524,6 +672,45 @@ export default function LayerPanel() {
       if (value && !has) { const next = new Set(prev); next.add(id); return next; }
       if (!value && has) { const next = new Set(prev); next.delete(id); return next; }
       return prev;
+    });
+  }, []);
+
+  useEffect(() => {
+    const el = nodeTreeRef.current;
+    if (!el) return;
+    return registerDropTarget({
+      element: el,
+      onDrop: (type, data, clientX, clientY) => {
+        if (!isPrefabDragType(type)) return;
+        const row = document.elementFromPoint(clientX, clientY)?.closest('[data-layer-node-id]');
+        if (row) return;
+        const prefabPath = typeof data?.relPath === 'string' ? data.relPath : '';
+        const state = useEditorStore.getState();
+        const activePageState = state.pages.find((page) => page.id === state.activePageId);
+        const activeArtboardState = activePageState?.artboards.find((artboard) => artboard.id === state.activeArtboardId);
+        const rootNodeId = activeArtboardState?.bridgeRootNodeId ?? state.rootIds[0] ?? null;
+        debugLog('layer-node-drop', 'blank-area-received', {
+          type,
+          prefabPath,
+          rootNodeId,
+          client: { x: clientX, y: clientY },
+        });
+        if (!prefabPath || !rootNodeId) {
+          if (!prefabPath) window.alert('这个组件没有 Prefab 路径，不能拖到节点区域');
+          return;
+        }
+        const index = state.nodes[rootNodeId]?.children.length ?? undefined;
+        void insertPrefabIntoNode(rootNodeId, prefabPath, { index }).catch((err) => {
+          debugLog('layer-node-drop', 'blank-area-insert-error', {
+            prefabPath,
+            rootNodeId,
+            index,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          console.error('插入 UI 失败:', err);
+          window.alert(`插入 UI 失败: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      },
     });
   }, []);
 
@@ -588,7 +775,7 @@ export default function LayerPanel() {
   };
 
   return (
-    <div className="w-56 bg-[#1e1e2e] border-r border-[#313244] flex flex-col h-full">
+    <div className="w-full bg-[#1e1e2e] flex flex-col h-full">
       {/* 图层 Tab 栏 */}
       <div className="border-b border-[#313244] min-w-0 flex items-center px-2 py-1.5 gap-1">
         <div className="flex-1 min-w-0 flex items-center gap-1 overflow-x-auto overflow-y-hidden">
@@ -666,7 +853,7 @@ export default function LayerPanel() {
         <h3 className="text-sm font-medium text-[#6c7086]">节点</h3>
       </div>
 
-      <div className="flex-1 overflow-auto layer-scroll">
+      <div ref={nodeTreeRef} className="flex-1 overflow-auto layer-scroll">
         <CollapseContext.Provider value={collapseCtx}>
         {rootIds.length === 0 ? (
           <div className="text-center text-[#6c7086] text-sm mt-8">
@@ -674,7 +861,13 @@ export default function LayerPanel() {
           </div>
         ) : (
           <div className="min-w-max">
-            {rootIds.map((id) => <LayerItem key={id} nodeId={id} />)}
+            {rootIds.map((id) => (
+              <LayerItem
+                key={id}
+                nodeId={id}
+                isArtboardRoot={id === artboardRootNodeId}
+              />
+            ))}
           </div>
         )}
         </CollapseContext.Provider>
@@ -708,20 +901,6 @@ export default function LayerPanel() {
               }}
             >
               重命名
-            </button>
-            <button
-              data-testid="layer-page-duplicate"
-              className="w-full text-left px-3 py-1.5 text-[13px] text-[#cdd6f4] hover:bg-[#45475a]"
-              onClick={() => {
-                const pageId = pageContextMenu.pageId;
-                void duplicateBridgePage(pageId).catch((err) => {
-                  console.error('复制图层失败:', err);
-                  window.alert(`复制图层失败: ${err instanceof Error ? err.message : String(err)}`);
-                });
-                setPageContextMenu(null);
-              }}
-            >
-              复制图层
             </button>
             {pages.length > 1 && (
               <button
@@ -765,8 +944,76 @@ function ArtboardListBar() {
   const [menu, setMenu] = useState<{ artboardId: string; x: number; y: number } | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renamingValue, setRenamingValue] = useState('');
+  const artboardBarRef = useRef<HTMLDivElement>(null);
 
   const page = pages.find((p) => p.id === activePageId);
+  useEffect(() => {
+    const el = artboardBarRef.current;
+    if (!el) return;
+    return registerDropTarget({
+      element: el,
+      onDrop: (type, data, clientX, clientY) => {
+        if (type !== 'application/uieditor-prefab' && type !== 'application/component') return;
+        const prefabPath = typeof data?.relPath === 'string' ? data.relPath : '';
+        debugLog('artboard-bar-drop', 'received', {
+          type,
+          prefabPath,
+          client: { x: clientX, y: clientY },
+        });
+        if (!prefabPath) {
+          debugLog('artboard-bar-drop', 'ignored-missing-prefab-path', {
+            type,
+            dataName: typeof data?.name === 'string' ? data.name : undefined,
+          });
+          window.alert('这个组件没有 Prefab 路径，不能拖到画板栏');
+          return;
+        }
+        const row = document
+          .elementFromPoint(clientX, clientY)
+          ?.closest('[data-testid="layer-artboard-row"]') as HTMLElement | null;
+        const rowArtboardId = row?.dataset.artboardId;
+        const state = useEditorStore.getState();
+        const currentPage = state.pages.find((item) => item.id === state.activePageId);
+        const rowArtboard = rowArtboardId ? currentPage?.artboards.find((item) => item.id === rowArtboardId) : null;
+        if (rowArtboard) {
+          debugLog('artboard-bar-drop', 'insert-into-artboard', {
+            prefabPath,
+            pageId: currentPage?.id,
+            rowArtboardId: rowArtboard.id,
+            rowArtboardName: rowArtboard.name,
+            point: { x: rowArtboard.width / 2, y: rowArtboard.height / 2 },
+          });
+          void insertPrefabIntoArtboard(rowArtboard.id, prefabPath, {
+            x: rowArtboard.width / 2,
+            y: rowArtboard.height / 2,
+          }, currentPage?.id).catch((err) => {
+            debugLog('artboard-bar-drop', 'insert-error', {
+              prefabPath,
+              rowArtboardId: rowArtboard.id,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            console.error('插入 UI 失败:', err);
+            window.alert(`插入 UI 失败: ${err instanceof Error ? err.message : String(err)}`);
+          });
+          return;
+        }
+        debugLog('artboard-bar-drop', 'open-new-artboard', {
+          prefabPath,
+          pageId: currentPage?.id,
+          rowHit: false,
+        });
+        void openPrefabInNewArtboard(prefabPath).catch((err) => {
+          debugLog('artboard-bar-drop', 'open-error', {
+            prefabPath,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          console.error('打开 UI 失败:', err);
+          window.alert(`打开 UI 失败: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      },
+    });
+  }, []);
+
   if (!page) return null;
   const artboards = page.artboards;
 
@@ -780,7 +1027,7 @@ function ArtboardListBar() {
   };
 
   return (
-    <div className="border-b border-[#313244] bg-[#181825]">
+    <div ref={artboardBarRef} className="border-b border-[#313244] bg-[#181825]">
       <div className="px-3 py-1.5 flex items-center justify-between">
         <h3 className="text-sm font-medium text-[#6c7086]">画板 <span className="text-[#45475a]">({artboards.length})</span></h3>
         <button
@@ -789,7 +1036,7 @@ function ArtboardListBar() {
           title="在当前页新建画板"
         >＋</button>
       </div>
-      <div className="max-h-[160px] overflow-y-auto">
+      <div data-testid="layer-artboard-list" className="max-h-[160px] min-h-12 overflow-y-auto">
         {artboards.map((a) => {
           const isActive = a.id === activeArtboardId;
           return (
@@ -854,20 +1101,6 @@ function ArtboardListBar() {
               }}
             >
               重命名
-            </button>
-            <button
-              data-testid="layer-artboard-duplicate"
-              className="w-full text-left px-3 py-1.5 text-[13px] text-[#cdd6f4] hover:bg-[#45475a]"
-              onClick={() => {
-                const id = menu.artboardId;
-                void duplicateBridgeArtboard(id).catch((err) => {
-                  console.error('复制画板失败:', err);
-                  window.alert(`复制画板失败: ${err instanceof Error ? err.message : String(err)}`);
-                });
-                setMenu(null);
-              }}
-            >
-              复制画板
             </button>
             {artboards.length > 1 && (
               <button

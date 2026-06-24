@@ -10,6 +10,7 @@ import editorBridgeClient, {
   type SnapshotRecord,
   type VisualPatchOperation,
 } from './EditorBridgeClient';
+import { debugLog } from '../utils/debugLog';
 
 const DEFAULT_SAVE_ROOT = 'Assets/HotRes2/UIs/Prefabs';
 let bridgeStateApplyDepth = 0;
@@ -29,6 +30,10 @@ function normalizeTargetPath(value: string): string {
   if (!path.startsWith('Assets/')) path = `${DEFAULT_SAVE_ROOT}/${path.replace(/^\/+/, '')}`;
   if (!path.endsWith('.prefab')) path += '.prefab';
   return path;
+}
+
+function prefabIdentity(value: string | null | undefined): string {
+  return value ? normalizeTargetPath(value).toLowerCase() : '';
 }
 
 function defaultTargetFor(name: string): string {
@@ -60,14 +65,62 @@ function hasComponent(node: NodeRecord, type: string): boolean {
   return node.components.some((component) => component.type === type);
 }
 
+function firstComponentType(node: NodeRecord, types: string[]): string | undefined {
+  return types.find((type) => hasComponent(node, type));
+}
+
+function duplicateNodeIds(nodes: Array<{ nodeId: string }>): string[] {
+  const counts = new Map<string, number>();
+  for (const node of nodes) counts.set(node.nodeId, (counts.get(node.nodeId) ?? 0) + 1);
+  return [...counts.entries()].filter(([, count]) => count > 1).map(([id]) => id);
+}
+
+function isVisibleBbox(box: BboxRecord | undefined): boolean {
+  return !!box && box.activeInHierarchy && box.width > 1 && box.height > 1;
+}
+
+function mergeBbox(a: BboxRecord, b: BboxRecord): BboxRecord {
+  const left = Math.min(a.x, b.x);
+  const top = Math.min(a.y, b.y);
+  const right = Math.max(a.x + a.width, b.x + b.width);
+  const bottom = Math.max(a.y + a.height, b.y + b.height);
+  return {
+    ...b,
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top,
+    activeInHierarchy: a.activeInHierarchy || b.activeInHierarchy,
+    space: a.space === b.space ? a.space : (b.space || a.space),
+  };
+}
+
+function normalizeSnapshot(snapshot: SnapshotRecord | null | undefined): SnapshotRecord | null | undefined {
+  if (!snapshot?.bboxes?.length) return snapshot;
+  const byNodeId = new Map<string, BboxRecord>();
+  for (const box of snapshot.bboxes) {
+    const prev = byNodeId.get(box.nodeId);
+    if (!prev) {
+      byNodeId.set(box.nodeId, box);
+      continue;
+    }
+    if (isVisibleBbox(prev) && isVisibleBbox(box)) {
+      byNodeId.set(box.nodeId, mergeBbox(prev, box));
+    } else if (!isVisibleBbox(prev) && isVisibleBbox(box)) {
+      byNodeId.set(box.nodeId, box);
+    }
+  }
+  return { ...snapshot, bboxes: [...byNodeId.values()] };
+}
+
 function nodeTypeOf(node: NodeRecord): NodeType {
-  if (hasComponent(node, 'Text')) return 'text';
+  if (hasComponent(node, 'Text') || hasComponent(node, 'UILabel')) return 'text';
   if (hasComponent(node, 'InputField')) return 'inputfield';
-  if (hasComponent(node, 'Button')) return 'button';
+  if (hasComponent(node, 'Button') || hasComponent(node, 'UIButton')) return 'button';
   if (hasComponent(node, 'Toggle')) return 'toggle';
   if (hasComponent(node, 'ScrollRect')) return 'scrollview';
   if (hasComponent(node, 'RawImage')) return 'rawimage';
-  if (hasComponent(node, 'Image')) return 'image';
+  if (hasComponent(node, 'Image') || hasComponent(node, 'UISprite') || hasComponent(node, 'UITexture') || hasComponent(node, 'UI2DSprite')) return 'image';
   return 'frame';
 }
 
@@ -75,13 +128,18 @@ function mapBridgeNode(node: NodeRecord): UINode {
   const rect = node.rectTransform;
   const pos = rect?.anchoredPosition ?? [0, 0];
   const size = rect?.sizeDelta ?? [Math.max(1, node.bbox?.width ?? 100), Math.max(1, node.bbox?.height ?? 100)];
-  const fontSize = summaryNumber(node, 'Text', 'fontSize') ?? defaultStyle.fontSize;
-  const rawTextColor = summaryString(node, 'Text', 'color');
+  const textComponent = firstComponentType(node, ['Text', 'UILabel']) ?? 'Text';
+  const imageComponent = firstComponentType(node, ['Image', 'UISprite', 'UITexture', 'UI2DSprite']) ?? 'Image';
+  const widgetComponent = firstComponentType(node, ['UIWidget', 'UILabel', 'UISprite', 'UITexture', 'UI2DSprite']);
+  const buttonComponent = firstComponentType(node, ['Button', 'UIButton']) ?? 'Button';
+  const fontSize = summaryNumber(node, textComponent, 'fontSize') ?? defaultStyle.fontSize;
+  const rawTextColor = summaryString(node, textComponent, 'color');
   const textColor = rawTextColor || defaultStyle.fontColor;
-  const imageColor = summaryString(node, 'Image', 'color');
+  const imageColor = summaryString(node, imageComponent, 'color') || (widgetComponent ? summaryString(node, widgetComponent, 'color') : '');
   const graphicColor = rawTextColor || imageColor || summaryString(node, 'RawImage', 'color');
   const canvasGroupAlpha = summaryNumber(node, 'CanvasGroup', 'alpha');
-  const textAlignValue = summaryNumber(node, 'Text', 'alignmentValue');
+  const widgetAlpha = widgetComponent ? summaryNumber(node, widgetComponent, 'alpha') : undefined;
+  const textAlignValue = summaryNumber(node, textComponent, 'alignmentValue');
   const outline = hasComponent(node, 'Outline') ? {
     color: summaryString(node, 'Outline', 'color') || '#000000',
     distance: [summaryNumber(node, 'Outline', 'distanceX') ?? 1, summaryNumber(node, 'Outline', 'distanceY') ?? -1] as [number, number],
@@ -101,7 +159,7 @@ function mapBridgeNode(node: NodeRecord): UINode {
     fontColor: textColor,
     textAlign: textAlignValue === 4 || textAlignValue === 1 || textAlignValue === 7 ? 'center' : (textAlignValue === 5 || textAlignValue === 2 || textAlignValue === 8 ? 'right' : 'left'),
     backgroundOpacity: nodeTypeOf(node) === 'frame' ? 0 : defaultStyle.backgroundOpacity,
-    opacity: alphaFromColor(graphicColor) ?? canvasGroupAlpha ?? defaultStyle.opacity,
+    opacity: alphaFromColor(graphicColor) ?? widgetAlpha ?? canvasGroupAlpha ?? defaultStyle.opacity,
   };
   return {
     id: node.nodeId,
@@ -117,35 +175,35 @@ function mapBridgeNode(node: NodeRecord): UINode {
     children: [...node.children],
     parentId: node.parentId ?? null,
     style,
-    text: summaryString(node, 'Text', 'text'),
-    fontPath: summaryString(node, 'Text', 'fontPath') || undefined,
-    fontStyle: summaryNumber(node, 'Text', 'fontStyle'),
+    text: summaryString(node, textComponent, 'text'),
+    fontPath: summaryString(node, textComponent, 'fontPath') || undefined,
+    fontStyle: summaryNumber(node, textComponent, 'fontStyle'),
     alignment: textAlignValue,
-    richText: summaryBool(node, 'Text', 'richText'),
-    horizontalOverflow: summaryNumber(node, 'Text', 'horizontalOverflow'),
-    verticalOverflow: summaryNumber(node, 'Text', 'verticalOverflow'),
-    lineSpacing: summaryNumber(node, 'Text', 'lineSpacing'),
-    bestFit: summaryBool(node, 'Text', 'bestFit'),
-    bestFitMinSize: summaryNumber(node, 'Text', 'bestFitMinSize'),
-    bestFitMaxSize: summaryNumber(node, 'Text', 'bestFitMaxSize'),
-    raycastTarget: summaryBool(node, 'Text', 'raycastTarget'),
+    richText: summaryBool(node, textComponent, 'richText'),
+    horizontalOverflow: summaryNumber(node, textComponent, 'horizontalOverflow'),
+    verticalOverflow: summaryNumber(node, textComponent, 'verticalOverflow'),
+    lineSpacing: summaryNumber(node, textComponent, 'lineSpacing'),
+    bestFit: summaryBool(node, textComponent, 'bestFit'),
+    bestFitMinSize: summaryNumber(node, textComponent, 'bestFitMinSize'),
+    bestFitMaxSize: summaryNumber(node, textComponent, 'bestFitMaxSize'),
+    raycastTarget: summaryBool(node, textComponent, 'raycastTarget'),
     textOutline: outline,
     textShadow: shadow,
-    imageData: summaryString(node, 'Image', 'spritePath'),
-    imageType: summaryString(node, 'Image', 'imageType') as UINode['imageType'],
+    imageData: summaryString(node, imageComponent, 'spritePath') || summaryString(node, imageComponent, 'sprite'),
+    imageType: summaryString(node, imageComponent, 'imageType') as UINode['imageType'],
     imageColor: imageColor || undefined,
-    imageEnabled: summaryBool(node, 'Image', 'enabled'),
-    imageRaycastTarget: summaryBool(node, 'Image', 'raycastTarget'),
-    fillCenter: summaryBool(node, 'Image', 'fillCenter'),
-    fillMethod: summaryNumber(node, 'Image', 'fillMethod'),
-    fillOrigin: summaryNumber(node, 'Image', 'fillOrigin'),
-    fillAmount: summaryNumber(node, 'Image', 'fillAmount'),
-    fillClockwise: summaryBool(node, 'Image', 'fillClockwise'),
-    useSpriteMesh: summaryBool(node, 'Image', 'useSpriteMesh'),
-    preserveAspect: summaryBool(node, 'Image', 'preserveAspect'),
+    imageEnabled: summaryBool(node, imageComponent, 'enabled'),
+    imageRaycastTarget: summaryBool(node, imageComponent, 'raycastTarget'),
+    fillCenter: summaryBool(node, imageComponent, 'fillCenter'),
+    fillMethod: summaryNumber(node, imageComponent, 'fillMethod'),
+    fillOrigin: summaryNumber(node, imageComponent, 'fillOrigin'),
+    fillAmount: summaryNumber(node, imageComponent, 'fillAmount'),
+    fillClockwise: summaryBool(node, imageComponent, 'fillClockwise'),
+    useSpriteMesh: summaryBool(node, imageComponent, 'useSpriteMesh'),
+    preserveAspect: summaryBool(node, imageComponent, 'preserveAspect'),
     outline,
-    interactable: summaryBool(node, 'Button', 'interactable') ?? summaryBool(node, 'Toggle', 'interactable'),
-    buttonTransition: summaryNumber(node, 'Button', 'transition'),
+    interactable: summaryBool(node, buttonComponent, 'interactable') ?? summaryBool(node, 'Toggle', 'interactable'),
+    buttonTransition: summaryNumber(node, buttonComponent, 'transition'),
     buttonColors: hasComponent(node, 'Button') ? {
       normalColor: summaryString(node, 'Button', 'normalColor') || '#FFFFFFFF',
       highlightedColor: summaryString(node, 'Button', 'highlightedColor') || '#FFFFFFFF',
@@ -221,8 +279,13 @@ function pickDefaultSelection(snapshot: SnapshotRecord | null | undefined, rootN
 }
 
 async function stateFromSession(session: SessionInfo): Promise<ArtboardStateResponse> {
+  const state = useEditorStore.getState();
   const tree = await editorBridgeClient.exportNodeTree(session.sessionId);
-  const image = await editorBridgeClient.renderSnapshot(session.sessionId, undefined, { profile: true });
+  const image = await editorBridgeClient.renderSnapshot(session.sessionId, undefined, {
+    width: state.previewWidth,
+    height: state.previewHeight,
+    profile: true,
+  });
   return {
     ok: true,
     session,
@@ -243,12 +306,80 @@ function getActiveArtboard(state = useEditorStore.getState()): Artboard | null {
   return page?.artboards.find((item) => item.id === state.activeArtboardId) ?? null;
 }
 
+function findOpenSourceArtboard(prefabPath: string): { pageId: string; artboard: Artboard } | null {
+  const target = prefabIdentity(prefabPath);
+  if (!target) return null;
+  const state = useEditorStore.getState();
+  for (const page of state.pages) {
+    for (const artboard of page.artboards) {
+      if (prefabIdentity(artboard.sourcePrefabPath) === target) {
+        return { pageId: page.id, artboard };
+      }
+    }
+  }
+  return null;
+}
+
+function activateArtboard(pageId: string, artboardId: string) {
+  const store = useEditorStore.getState();
+  if (store.activePageId !== pageId) store.switchPage(pageId);
+  const nextStore = useEditorStore.getState();
+  if (nextStore.activeArtboardId !== artboardId) nextStore.setActiveArtboard(artboardId);
+}
+
+function showStatusMessage(message: string) {
+  updateActiveArtboard({ bridgeStatus: message });
+  if (typeof window !== 'undefined') window.setTimeout(() => updateActiveArtboard({ bridgeStatus: '' }), 3500);
+}
+
 function isNodeLocked(nodeId: string): boolean {
   return !!useEditorStore.getState().nodes[nodeId]?.locked;
 }
 
 function unlockedNodeIds(nodeIds: string[]): string[] {
   return [...new Set(nodeIds)].filter((nodeId) => !!nodeId && !isNodeLocked(nodeId));
+}
+
+function nodeDepth(nodeId: string, nodes: Record<string, UINode>): number {
+  let depth = 0;
+  let parentId = nodes[nodeId]?.parentId ?? null;
+  while (parentId && nodes[parentId]) {
+    depth += 1;
+    parentId = nodes[parentId].parentId ?? null;
+  }
+  return depth;
+}
+
+function siblingIndex(nodeId: string, nodes: Record<string, UINode>, rootIds: string[]): number {
+  const node = nodes[nodeId];
+  if (!node) return -1;
+  const siblings = node.parentId && nodes[node.parentId] ? nodes[node.parentId].children : rootIds;
+  return siblings.indexOf(nodeId);
+}
+
+function hasSelectedAncestor(nodeId: string, selected: Set<string>, nodes: Record<string, UINode>): boolean {
+  let parentId = nodes[nodeId]?.parentId ?? null;
+  while (parentId) {
+    if (selected.has(parentId)) return true;
+    parentId = nodes[parentId]?.parentId ?? null;
+  }
+  return false;
+}
+
+function deletableNodeIds(nodeIds: string[], artboard: Artboard, nodes: Record<string, UINode>, rootIds: string[]): string[] {
+  const selected = new Set(nodeIds.filter(Boolean));
+  return [...selected]
+    .filter((nodeId) => {
+      if (nodeId === artboard.bridgeRootNodeId) return false;
+      const node = nodes[nodeId];
+      if (!node || node.locked) return false;
+      return !hasSelectedAncestor(nodeId, selected, nodes);
+    })
+    .sort((a, b) => {
+      const depthDelta = nodeDepth(b, nodes) - nodeDepth(a, nodes);
+      if (depthDelta !== 0) return depthDelta;
+      return siblingIndex(b, nodes, rootIds) - siblingIndex(a, nodes, rootIds);
+    });
 }
 
 function updateActiveArtboard(patch: Partial<Artboard>, selectedIds?: string[]) {
@@ -312,7 +443,8 @@ async function artboardFromBridgeState(
     nodes[node.nodeId] = mapped;
   });
   const rootIds = response.nodes.filter((node) => !node.parentId).map((node) => node.nodeId);
-  const snapshotUrl = response.snapshot ? await editorBridgeClient.snapshotUrl(response.snapshot) : null;
+  const snapshot = normalizeSnapshot(response.snapshot);
+  const snapshotUrl = snapshot ? await editorBridgeClient.snapshotUrl(snapshot) : null;
   return {
     ...base,
     name,
@@ -324,7 +456,7 @@ async function artboardFromBridgeState(
     bridgeTargetPrefabPath: defaultTargetFor(name),
     bridgeRevision: response.revision,
     bridgeRootNodeId: response.rootNodeId,
-    bridgeSnapshot: response.snapshot,
+    bridgeSnapshot: snapshot,
     bridgeSnapshotUrl: snapshotUrl,
     bridgeDirty: true,
     bridgeUndoAvailable: response.undoAvailable,
@@ -336,6 +468,7 @@ async function artboardFromBridgeState(
 export async function applyBridgeStateToActiveArtboard(response: ArtboardStateResponse, status?: string, selectedIdsOverride?: string[]) {
   const nodes: Record<string, UINode> = {};
   const previousNodes = getActiveArtboard()?.nodes ?? useEditorStore.getState().nodes;
+  const duplicates = duplicateNodeIds(response.nodes);
   response.nodes.forEach((node) => {
     const mapped = mapBridgeNode(node);
     mapped.locked = !!previousNodes[node.nodeId]?.locked;
@@ -343,8 +476,22 @@ export async function applyBridgeStateToActiveArtboard(response: ArtboardStateRe
   });
   const rootIds = response.nodes.filter((node) => !node.parentId).map((node) => node.nodeId);
   const fallbackName = basename(response.session.sourcePrefabPath || response.session.workingPrefabPath);
-  const snapshotUrl = response.snapshot ? await editorBridgeClient.snapshotUrl(response.snapshot) : null;
-  const selectedNodeId = response.selectedNodeId ?? pickDefaultSelection(response.snapshot, response.rootNodeId);
+  const snapshot = normalizeSnapshot(response.snapshot);
+  const snapshotUrl = snapshot ? await editorBridgeClient.snapshotUrl(snapshot) : null;
+  const selectedNodeId = response.selectedNodeId ?? pickDefaultSelection(snapshot, response.rootNodeId);
+  debugLog('bridge-state', 'apply-active-artboard', {
+    status,
+    sessionId: response.session.sessionId,
+    revision: response.revision,
+    responseNodeCount: response.nodes.length,
+    mappedNodeCount: Object.keys(nodes).length,
+    rootCount: rootIds.length,
+    selectedNodeId,
+    duplicateNodeIds: duplicates,
+    snapshotId: snapshot?.snapshotId,
+    snapshotBboxCount: snapshot?.bboxes.length,
+    profileTotalMs: response.profile?.totalMs,
+  });
   updateActiveArtboard({
     name: getActiveArtboard()?.name || fallbackName,
     nodes,
@@ -355,13 +502,32 @@ export async function applyBridgeStateToActiveArtboard(response: ArtboardStateRe
     bridgeTargetPrefabPath: response.session.sourcePrefabPath || getActiveArtboard()?.bridgeTargetPrefabPath || defaultTargetFor(fallbackName),
     bridgeRevision: response.revision,
     bridgeRootNodeId: response.rootNodeId,
-    bridgeSnapshot: response.snapshot,
+    bridgeSnapshot: snapshot,
     bridgeSnapshotUrl: snapshotUrl,
     bridgeDirty: response.dirty,
     bridgeUndoAvailable: response.undoAvailable,
     bridgeRedoAvailable: response.redoAvailable,
     bridgeStatus: status,
   }, selectedIdsOverride ?? (selectedNodeId ? [selectedNodeId] : []));
+}
+
+export async function refreshActiveBridgeSnapshot(width?: number, height?: number) {
+  const artboard = getActiveArtboard();
+  if (!artboard?.bridgeSessionId) return;
+  const state = useEditorStore.getState();
+  const snapshotResponse = await editorBridgeClient.renderSnapshot(artboard.bridgeSessionId, undefined, {
+    width: width ?? state.previewWidth,
+    height: height ?? state.previewHeight,
+    profile: true,
+  });
+  const snapshot = normalizeSnapshot(snapshotResponse.snapshot);
+  const snapshotUrl = snapshot ? await editorBridgeClient.snapshotUrl(snapshot) : null;
+  updateActiveArtboard({
+    bridgeRevision: snapshotResponse.revision,
+    bridgeSnapshot: snapshot,
+    bridgeSnapshotUrl: snapshotUrl,
+    bridgeStatus: '',
+  });
 }
 
 export async function ensureActiveBridgeArtboard(): Promise<Artboard> {
@@ -390,15 +556,75 @@ export async function createBlankInActiveArtboard(name = 'NewUI') {
 }
 
 export async function openPrefabInActiveArtboard(prefabPath: string) {
-  const opened = await editorBridgeClient.openPrefab(prefabPath, 'temp-copy');
+  const state = useEditorStore.getState();
+  const opened = await editorBridgeClient.openPrefab(prefabPath, 'temp-copy', {
+    width: state.previewWidth,
+    height: state.previewHeight,
+  });
   const response = await stateFromSession(opened.session);
   await applyBridgeStateToActiveArtboard(response, `已打开 UI: ${opened.session.sourcePrefabPath}`);
 }
 
 export async function openPrefabInNewArtboard(prefabPath: string) {
+  const existing = findOpenSourceArtboard(prefabPath);
+  if (existing) {
+    activateArtboard(existing.pageId, existing.artboard.id);
+    showStatusMessage('已有同名 UI 被打开');
+    return;
+  }
   const name = basename(prefabPath);
   useEditorStore.getState().addArtboard({ name });
   await openPrefabInActiveArtboard(prefabPath);
+}
+
+export async function insertPrefabIntoArtboard(artboardId: string, prefabPath: string, point: { x: number; y: number }, pageId?: string) {
+  const state = useEditorStore.getState();
+  debugLog('bridge-insert', 'activate-target-artboard', {
+    pageId: pageId ?? state.activePageId,
+    artboardId,
+    prefabPath,
+    point: { x: Math.round(point.x), y: Math.round(point.y) },
+    previousActivePageId: state.activePageId,
+    previousActiveArtboardId: state.activeArtboardId,
+  });
+  activateArtboard(pageId ?? state.activePageId, artboardId);
+  await insertPrefabIntoActiveArtboard(prefabPath, point);
+}
+
+export async function insertPrefabIntoNode(parentId: string, prefabPath: string, options: { index?: number } = {}) {
+  const artboard = await ensureActiveBridgeArtboard();
+  const startedAt = performance.now();
+  debugLog('bridge-insert', 'request-node-parent', {
+    sessionId: artboard.bridgeSessionId,
+    artboardId: artboard.id,
+    artboardName: artboard.name,
+    prefabPath,
+    parentId,
+    index: options.index,
+    beforeNodeCount: Object.keys(artboard.nodes ?? {}).length,
+  });
+  const response = await editorBridgeClient.insertPrefab(artboard.bridgeSessionId!, prefabPath, {
+    parentId,
+    x: 0,
+    y: 0,
+    index: options.index,
+  }, { skipSnapshot: false });
+  debugLog('bridge-insert', 'response-node-parent', {
+    sessionId: artboard.bridgeSessionId,
+    prefabPath,
+    parentId,
+    elapsedMs: Math.round(performance.now() - startedAt),
+    responseNodeCount: response.nodes.length,
+    rootNodeId: response.rootNodeId,
+    selectedNodeId: response.selectedNodeId,
+    dirty: response.dirty,
+    duplicateNodeIds: duplicateNodeIds(response.nodes),
+    snapshotId: response.snapshot?.snapshotId,
+    bboxCount: response.snapshot?.bboxes.length,
+    profileTotalMs: response.profile?.totalMs,
+    profile: response.profile?.entries,
+  });
+  await applyBridgeStateToActiveArtboard(response, '已插入 UI');
 }
 
 export async function duplicateBridgeArtboard(sourceArtboardId?: string) {
@@ -562,6 +788,14 @@ export async function resizeNodeOnBridge(nodeId: string, width: number, height: 
 async function applyVisualFieldsOnBridge(operations: VisualPatchOperation[], status = '属性已同步') {
   if (operations.length === 0) return;
   const artboard = await ensureActiveBridgeArtboard();
+  const selectedBefore = useEditorStore.getState().selectedIds;
+  const operationNodeIds = [...new Set(operations.map((item) => item.nodeId).filter(Boolean))];
+  debugLog('bridge-op', 'apply-visual-fields', {
+    sessionId: artboard.bridgeSessionId,
+    selectedBefore,
+    operationNodeIds,
+    fields: operations.map((item) => item.field),
+  });
   await editorBridgeClient.applyVisualPatch(artboard.bridgeSessionId!, {
     patchId: globalThis.crypto?.randomUUID?.() ?? `patch-${Date.now()}`,
     baseRevision: artboard.bridgeRevision ?? '',
@@ -574,7 +808,10 @@ async function applyVisualFieldsOnBridge(operations: VisualPatchOperation[], sta
     mode: 'temp-copy',
     revision: artboard.bridgeRevision ?? '',
   });
-  await applyBridgeStateToActiveArtboard(response, status);
+  const responseNodeIds = new Set(response.nodes.map((item) => item.nodeId));
+  const selectedAfter = selectedBefore.filter((id) => responseNodeIds.has(id));
+  const operationSelection = operationNodeIds.filter((id) => responseNodeIds.has(id));
+  await applyBridgeStateToActiveArtboard(response, status, selectedAfter.length > 0 ? selectedAfter : operationSelection);
 }
 
 export async function setRectTransformFieldsOnBridge(nodeId: string, params: {
@@ -673,10 +910,37 @@ export async function setOpacityNodesOnBridge(nodeIds: string[], opacity: number
 }
 
 export async function deleteNodeOnBridge(nodeId: string) {
-  if (isNodeLocked(nodeId)) return;
+  await deleteNodesOnBridge([nodeId]);
+}
+
+export async function deleteNodesOnBridge(nodeIds: string[]) {
   const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.deleteNode(artboard.bridgeSessionId!, nodeId, { skipSnapshot: false });
-  await applyBridgeStateToActiveArtboard(response, '节点已删除');
+  const state = useEditorStore.getState();
+  const ids = deletableNodeIds(nodeIds, artboard, state.nodes, state.rootIds);
+  debugLog('bridge-op', 'delete-nodes', {
+    requestedNodeIds: nodeIds,
+    deletableNodeIds: ids,
+    rootNodeId: artboard.bridgeRootNodeId,
+    sessionId: artboard.bridgeSessionId,
+  });
+  if (ids.length === 0) {
+    showStatusMessage('没有可删除的节点');
+    return;
+  }
+
+  let response: ArtboardStateResponse | null = null;
+  try {
+    for (let index = 0; index < ids.length; index += 1) {
+      response = await editorBridgeClient.deleteNode(artboard.bridgeSessionId!, ids[index], {
+        skipSnapshot: index < ids.length - 1,
+      });
+    }
+  } catch (err: any) {
+    showStatusMessage(`删除失败: ${err?.message || String(err)}`);
+    throw err;
+  }
+
+  if (response) await applyBridgeStateToActiveArtboard(response, ids.length > 1 ? `已删除 ${ids.length} 个节点` : '节点已删除', []);
 }
 
 export async function deleteNodesFromBridgeSession(sessionId: string, nodeIds: string[]) {
@@ -1108,23 +1372,57 @@ export async function syncNodeVisualDelta(prev: UINode | undefined, next: UINode
 export async function insertPrefabIntoActiveArtboard(prefabPath: string, point: { x: number; y: number }) {
   const artboard = await ensureActiveBridgeArtboard();
   const rootNodeId = artboard.bridgeRootNodeId ?? null;
-  const selectedParent = useEditorStore.getState().selectedIds[0] || rootNodeId;
+  const state = useEditorStore.getState();
+  const viewportWidth = state.previewWidth;
+  const viewportHeight = state.previewHeight;
+  const startedAt = performance.now();
+  debugLog('bridge-insert', 'request', {
+    sessionId: artboard.bridgeSessionId,
+    artboardId: artboard.id,
+    artboardName: artboard.name,
+    prefabPath,
+    point: { x: Math.round(point.x), y: Math.round(point.y) },
+    unityPosition: {
+      x: Math.round(point.x - viewportWidth / 2),
+      y: Math.round(viewportHeight / 2 - point.y),
+    },
+    parentId: rootNodeId,
+    beforeNodeCount: Object.keys(artboard.nodes ?? {}).length,
+    beforeRootCount: artboard.rootIds?.length ?? 0,
+  });
   const response = await editorBridgeClient.insertPrefab(artboard.bridgeSessionId!, prefabPath, {
-    parentId: selectedParent,
-    x: Math.round(point.x - 1080 / 2),
-    y: Math.round(1920 / 2 - point.y),
+    parentId: rootNodeId,
+    x: Math.round(point.x - viewportWidth / 2),
+    y: Math.round(viewportHeight / 2 - point.y),
   }, { skipSnapshot: false });
+  debugLog('bridge-insert', 'response', {
+    sessionId: artboard.bridgeSessionId,
+    prefabPath,
+    elapsedMs: Math.round(performance.now() - startedAt),
+    responseNodeCount: response.nodes.length,
+    rootNodeId: response.rootNodeId,
+    selectedNodeId: response.selectedNodeId,
+    dirty: response.dirty,
+    duplicateNodeIds: duplicateNodeIds(response.nodes),
+    snapshotId: response.snapshot?.snapshotId,
+    bboxCount: response.snapshot?.bboxes.length,
+    profileTotalMs: response.profile?.totalMs,
+    profile: response.profile?.entries,
+  });
   await applyBridgeStateToActiveArtboard(response, '已插入 UI');
 }
 
-export async function saveActiveBridgeArtboard(targetPath?: string | null) {
+export async function saveActiveBridgeArtboard(targetPath?: string | null, options: { saveAs?: boolean } = {}) {
   const artboard = await ensureActiveBridgeArtboard();
-  const target = artboard.sourcePrefabPath ? null : normalizeTargetPath(targetPath || artboard.bridgeTargetPrefabPath || defaultTargetFor(artboard.name));
+  const target = options.saveAs || !artboard.sourcePrefabPath
+    ? normalizeTargetPath(targetPath || artboard.bridgeTargetPrefabPath || defaultTargetFor(artboard.name))
+    : null;
   const result = await editorBridgeClient.saveArtboard(artboard.bridgeSessionId!, target);
   updateActiveArtboard({
-    sourcePrefabPath: result.sourcePrefabPath || artboard.sourcePrefabPath,
+    name: basename(result.sourcePrefabPath || result.savedPath || artboard.name),
+    sourcePrefabPath: result.sourcePrefabPath || result.savedPath || artboard.sourcePrefabPath,
     bridgeWorkingPrefabPath: result.workingPrefabPath,
-    bridgeTargetPrefabPath: result.savedPath,
+    bridgeTargetPrefabPath: result.sourcePrefabPath || result.savedPath,
     bridgeRevision: result.revision,
     bridgeDirty: false,
     bridgeStatus: `已保存: ${result.savedPath}`,

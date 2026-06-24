@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { useEditorStore } from '../../stores/editorStore';
 import { startCustomDrag } from '../../utils/customDrag';
 import { PrefabThumbnail, clearPrefabThumbnailMemoryCache } from './PrefabThumbnail';
-import { insertPrefabIntoActiveArtboard } from '../../services/BridgeArtboardStore';
 
 interface PrefabEntry {
   name: string;
@@ -19,7 +18,6 @@ export default function TemplateLibrary() {
   const [search, setSearch] = useState('');
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [expandedTex, setExpandedTex] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState<string | null>(null);
 
   const [clearing, setClearing] = useState(false);
   const prefabListReloadCounter = useEditorStore((s) => s.prefabListReloadCounter);
@@ -84,14 +82,6 @@ export default function TemplateLibrary() {
       `<img src="${tex.url}" style="width:20px;height:20px;object-fit:contain" /><span>${tex.name}</span>`);
   };
 
-  const handleInsert = async (entry: PrefabEntry) => {
-    setLoading(entry.relPath);
-    try {
-      await insertPrefabIntoActiveArtboard(entry.relPath, { x: 540, y: 960 });
-    } catch (err) { console.error('模板加载失败:', err); }
-    setLoading(null);
-  };
-
   const filtered = search ? prefabs.filter((t) => t.name.toLowerCase().includes(search.toLowerCase())) : null;
 
   return (
@@ -108,7 +98,7 @@ export default function TemplateLibrary() {
         {prefabs.length === 0 && <div className="text-center text-[#6c7086] text-sm mt-8">加载中...</div>}
 
         {filtered && filtered.map((t) => (
-          <PrefabRow key={t.relPath} entry={t} loading={loading} onInsert={handleInsert} />
+          <PrefabRow key={t.relPath} entry={t} />
         ))}
         {filtered && filtered.length === 0 && <div className="text-center text-[#6c7086] text-sm mt-4">未找到</div>}
 
@@ -169,7 +159,7 @@ export default function TemplateLibrary() {
                   )}
                   {/* 二级：Prefab 列表 */}
                   {items.map((t) => (
-                    <PrefabRow key={t.relPath} entry={t} loading={loading} onInsert={handleInsert} indent />
+                    <PrefabRow key={t.relPath} entry={t} indent />
                   ))}
                 </div>
               )}
@@ -187,8 +177,8 @@ export default function TemplateLibrary() {
   );
 }
 
-function PrefabRow({ entry, loading, onInsert, indent }: {
-  entry: PrefabEntry; loading: string | null; onInsert: (e: PrefabEntry) => void; indent?: boolean;
+function PrefabRow({ entry, indent }: {
+  entry: PrefabEntry; indent?: boolean;
 }) {
   const handleDrag = (event: React.MouseEvent) => {
     startCustomDrag(
@@ -204,10 +194,6 @@ function PrefabRow({ entry, loading, onInsert, indent }: {
       onMouseDown={handleDrag}>
       <PrefabThumbnail relPath={entry.relPath} variant="content" />
       <span className="text-[13px] text-[#cdd6f4] truncate flex-1">{entry.name}</span>
-      <button onClick={() => onInsert(entry)} disabled={loading === entry.relPath}
-        className="shrink-0 px-2 py-0.5 text-[11px] bg-[#89b4fa] text-[#1e1e2e] rounded hover:bg-[#74c7ec] disabled:opacity-50 mr-2">
-        {loading === entry.relPath ? '...' : '插入'}
-      </button>
     </div>
   );
 }

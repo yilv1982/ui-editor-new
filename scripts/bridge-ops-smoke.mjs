@@ -9,7 +9,7 @@ const ROOT = path.resolve(__dirname, '..');
 
 function parseArgs(argv) {
   const args = {
-    bridgeUrl: 'http://127.0.0.1:8082',
+    bridgeUrl: 'http://127.0.0.1:18082',
     out: path.join(ROOT, '.cache', 'bridge-ops-smoke', 'latest'),
   };
   for (let i = 0; i < argv.length; i += 1) {

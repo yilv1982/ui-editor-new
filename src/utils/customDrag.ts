@@ -3,6 +3,8 @@
  * 解决与 Eagle 等全局拖拽拦截软件的冲突。
  */
 
+import { debugLog } from './debugLog';
+
 // ──────── 类型 ────────
 
 interface DragState {
@@ -29,6 +31,33 @@ const dropTargets: Set<DropTarget> = new Set();
 let activeTarget: DropTarget | null = null;
 
 const DRAG_THRESHOLD = 4; // 超过 4px 才开始拖拽，避免误触
+
+function dataSummary(data: any): Record<string, unknown> {
+  return {
+    relPath: typeof data?.relPath === 'string' ? data.relPath : undefined,
+    path: typeof data?.path === 'string' ? data.path : undefined,
+    name: typeof data?.name === 'string' ? data.name : undefined,
+  };
+}
+
+function targetSummary(target: DropTarget | null): Record<string, unknown> {
+  if (!target) return { hit: false };
+  const el = target.element;
+  const rect = el.getBoundingClientRect();
+  return {
+    hit: true,
+    testId: el.dataset.testid,
+    artboardId: el.dataset.artboardId,
+    nodeId: el.dataset.layerNodeId,
+    className: typeof el.className === 'string' ? el.className.slice(0, 120) : undefined,
+    rect: {
+      left: Math.round(rect.left),
+      top: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    },
+  };
+}
 
 // ──────── 拖拽源 API ────────
 
@@ -60,6 +89,13 @@ export function startCustomDrag(
     startY: e.clientY,
     started: false,
   };
+
+  debugLog('drag', 'start', {
+    type,
+    start: { x: e.clientX, y: e.clientY },
+    data: dataSummary(data),
+    dropTargets: dropTargets.size,
+  });
 
   document.addEventListener('mousemove', onMouseMove, true);
   document.addEventListener('mouseup', onMouseUp, true);
@@ -107,6 +143,12 @@ function onMouseMove(e: MouseEvent) {
     createPreview(e.clientX, e.clientY);
     document.body.style.cursor = 'grabbing';
     document.body.style.userSelect = 'none';
+    debugLog('drag', 'threshold-passed', {
+      type: dragState.type,
+      delta: { x: Math.round(dx), y: Math.round(dy) },
+      data: dataSummary(dragState.data),
+      dropTargets: dropTargets.size,
+    });
   }
 
   // 移动预览
@@ -120,6 +162,11 @@ function onMouseMove(e: MouseEvent) {
   if (target !== activeTarget) {
     if (activeTarget?.onDragLeave) activeTarget.onDragLeave();
     activeTarget = target;
+    debugLog('drag', 'target-change', {
+      type: dragState.type,
+      point: { x: e.clientX, y: e.clientY },
+      target: targetSummary(target),
+    });
     if (target?.onDragOver) target.onDragOver(dragState.type, e.clientX, e.clientY);
   } else if (target?.onDragOver) {
     target.onDragOver(dragState.type, e.clientX, e.clientY);
@@ -131,6 +178,13 @@ function onMouseUp(e: MouseEvent) {
 
   if (dragState.started) {
     const target = findTargetAt(e.clientX, e.clientY);
+    debugLog('drag', 'drop', {
+      type: dragState.type,
+      point: { x: e.clientX, y: e.clientY },
+      data: dataSummary(dragState.data),
+      target: targetSummary(target),
+      dropTargets: dropTargets.size,
+    });
     if (target) {
       target.onDrop(dragState.type, dragState.data, e.clientX, e.clientY);
     }
@@ -141,13 +195,15 @@ function onMouseUp(e: MouseEvent) {
 }
 
 function findTargetAt(x: number, y: number): DropTarget | null {
+  let best: { target: DropTarget; area: number } | null = null;
   for (const target of dropTargets) {
     const rect = target.element.getBoundingClientRect();
     if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-      return target;
+      const area = Math.max(1, rect.width * rect.height);
+      if (!best || area < best.area) best = { target, area };
     }
   }
-  return null;
+  return best?.target ?? null;
 }
 
 function createPreview(x: number, y: number) {

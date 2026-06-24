@@ -61,10 +61,10 @@ VITE v8.0.3 ready
 Local: http://127.0.0.1:4105/
 ```
 
-当前主画布不再尝试加载旧 WebGL 路径。旧 `UnityCanvas.tsx`、`UnityBridge.ts` 和 `StoreSync.ts` 仍保留在源码中作为待拆分/诊断材料，但默认入口已切到 `EditorBridgeCanvas`。
+当前主画布不再尝试加载旧 WebGL 路径。旧浏览器内 WebGL 主画布已删除；`UnityBridge.ts` 和 `StoreSync.ts` 仅作为未清理的旧诊断/辅助路径保留，默认入口已切到 `BridgeMainCanvas`。
 
 ```text
-src/App.tsx -> src/components/Canvas/EditorBridgeCanvas.tsx
+src/App.tsx -> src/components/Canvas/BridgeMainCanvas.tsx
 ```
 
 ### HTTP Smoke

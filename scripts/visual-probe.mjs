@@ -329,8 +329,9 @@ async function main() {
       await cdp.send('Page.navigate', { url: args.url }, 10000).catch(() => {});
       await waitForExpression(cdp, 'document.readyState === "complete" || document.readyState === "interactive"', 30000);
     }
-    await waitForExpression(cdp, '!!window.__UIEDITOR_DEBUG__ && !!document.getElementById("unity-canvas")', 30000);
-    await waitForExpression(cdp, `(() => {
+    await waitForExpression(cdp, '!!window.__UIEDITOR_DEBUG__ && (!!document.getElementById("unity-canvas") || !!document.querySelector("[data-canvas-container]"))', 30000);
+    const bridgeMode = await evaluate(cdp, '!document.getElementById("unity-canvas") && !!document.querySelector("[data-canvas-container]")');
+    if (!bridgeMode) await waitForExpression(cdp, `(() => {
       const api = window.__UIEDITOR_DEBUG__;
       if (!api) return false;
       const msgs = api.unityMessages ? api.unityMessages() : [];
@@ -354,12 +355,34 @@ async function main() {
     const probeResult = await evaluate(cdp, `(async () => {
       const api = window.__UIEDITOR_DEBUG__;
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const waitUntil = async (predicate, timeoutMs = 45000) => {
+        const deadline = Date.now() + timeoutMs;
+        let last = false;
+        while (Date.now() < deadline) {
+          last = !!predicate();
+          if (last) return true;
+          await sleep(300);
+        }
+        return false;
+      };
+      const bridgeMode = ${bridgeMode ? 'true' : 'false'};
       api.setPreviewResolution(${Number(args.width)}, ${Number(args.height)});
       await sleep(400);
-      await api.importPrefab(${JSON.stringify(args.prefab)}, { clear: true });
-      await sleep(700);
-      api.setPreviewResolution(${Number(args.width)}, ${Number(args.height)});
-      await sleep(800);
+      if (bridgeMode) {
+        if (!api.openBridgePrefab) throw new Error('openBridgePrefab debug API is missing');
+        await api.openBridgePrefab(${JSON.stringify(args.prefab)});
+        const ready = await waitUntil(() => {
+          const bridge = api.bridgeBboxes ? api.bridgeBboxes() : null;
+          const img = document.querySelector('[data-canvas-container] img');
+          return !!bridge && Array.isArray(bridge.bboxes) && bridge.bboxes.length > 0 && !!img && img.complete && img.naturalWidth > 0;
+        });
+        if (!ready) throw new Error('Bridge snapshot image did not become ready');
+      } else {
+        await api.importPrefab(${JSON.stringify(args.prefab)}, { clear: true });
+        await sleep(700);
+        api.setPreviewResolution(${Number(args.width)}, ${Number(args.height)});
+        await sleep(800);
+      }
       const targetArgs = {
         threshold: ${Number(args.threshold)},
         fullSync: true,
@@ -367,9 +390,52 @@ async function main() {
         targetPath: ${JSON.stringify(args.targetPath || '')},
         targetUnityFileId: ${JSON.stringify(args.targetUnityFileId || '')}
       };
+      const bridgeProbe = () => {
+        const bridge = api.bridgeBboxes ? api.bridgeBboxes() : { bboxes: [], selectedIds: [], rootNodeId: null };
+        const boxes = Array.isArray(bridge.bboxes) ? bridge.bboxes : [];
+        const nodeFor = (box) => box ? (api.node ? api.node(box.nodeId)?.node : null) : null;
+        const selected = Array.isArray(bridge.selectedIds) ? bridge.selectedIds : [];
+        const targetByPath = targetArgs.targetPath
+          ? boxes.find((box) => String(box.nodeId || '').replace(/^path:/, '').includes(targetArgs.targetPath))
+          : null;
+        const targetByUnityFileId = targetArgs.targetUnityFileId
+          ? boxes.find((box) => nodeFor(box)?.unityFileId === targetArgs.targetUnityFileId)
+          : null;
+        const targetBySelected = selected.length > 0
+          ? boxes.find((box) => box.nodeId === selected[0])
+          : null;
+        const targetName = ${JSON.stringify(args.name)}.toLowerCase();
+        const targetByName = targetName
+          ? boxes.find((box) => {
+              const node = nodeFor(box);
+              return node && String(node.name || '').toLowerCase().includes(targetName);
+            })
+          : null;
+        const targetBox = targetByPath
+          || targetByUnityFileId
+          || targetBySelected
+          || targetByName
+          || boxes.find((box) => box.activeInHierarchy && box.nodeId !== bridge.rootNodeId && box.width > 4 && box.height > 4)
+          || boxes[0]
+          || null;
+        const targetNode = nodeFor(targetBox);
+        return {
+          at: new Date().toISOString(),
+          focus: null,
+          target: targetNode || (targetBox ? { id: targetBox.nodeId, name: targetBox.nodeId } : null),
+          bridge,
+          matchingBridgeBound: targetBox,
+          snapshot: api.snapshot ? api.snapshot() : null,
+          diagnostics: null,
+          warnings: []
+        };
+      };
       let initial = null;
       let before = null;
-      if (${args.fitTarget ? 'true' : 'false'} && api.focusTargetInViewport) {
+      if (bridgeMode) {
+        initial = bridgeProbe();
+        before = bridgeProbe();
+      } else if (${args.fitTarget ? 'true' : 'false'} && api.focusTargetInViewport) {
         initial = await api.visualProbe(${JSON.stringify(args.name)}, targetArgs);
         await sleep(250);
         before = await api.visualProbe(${JSON.stringify(args.name)}, {
@@ -386,7 +452,7 @@ async function main() {
         const targetId = before && before.target ? before.target.id : ${JSON.stringify(args.name)};
         drag = await api.dragSelectedByScreenDelta(${Number(args.dragX)}, ${Number(args.dragY)}, targetId);
         await sleep(400);
-        after = await api.visualProbe(targetId, { threshold: ${Number(args.threshold)}, fullSync: true });
+        after = bridgeMode ? bridgeProbe() : await api.visualProbe(targetId, { threshold: ${Number(args.threshold)}, fullSync: true });
       }
       return { initial, before, drag, after };
     })()`, 60000);
@@ -402,6 +468,8 @@ async function main() {
         const style = document.createElement('style');
         style.id = 'visual-probe-clean-screenshot-style';
         style.textContent = [
+          '[data-canvas-ui]{display:none!important;}',
+          '[data-testid="scene-toolbar"]{display:none!important;}',
           '[data-overlay-root]{display:none!important;}',
           '[data-drag-handle]{display:none!important;}',
           '.konvajs-content + *{display:none!important;}'

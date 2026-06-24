@@ -33,5 +33,8 @@ public/unity/
 public/components/
 public/_temp_images/
 
+# Unity generates these in the linked DreamlandProject Assets tree.
+unity/**/*.meta
+
 # Legacy copied planning docs are intentionally excluded from this fork.
 docs/superpowers/

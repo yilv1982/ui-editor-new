@@ -33,8 +33,8 @@
 | --- | --- | --- |
 | Web 开发服务 | `npm run dev` | 启动浏览器编辑界面。 |
 | Web 地址 | `http://localhost:4105/` | 打开主界面。 |
-| Unity Bridge | `http://127.0.0.1:8082` | Unity Editor 本地编辑服务。 |
-| Bridge 健康检查 | `http://127.0.0.1:8082/health` | 确认 Unity 侧服务可用。 |
+| Unity Bridge | `http://127.0.0.1:18082` | Unity Editor 本地编辑服务。 |
+| Bridge 健康检查 | `http://127.0.0.1:18082/health` | 确认 Unity 侧服务可用。 |
 | 构建检查 | `npm run build` | TypeScript 和 Vite 构建验证。 |
 | 主流程烟测 | `npm run smoke:bridge-web` | 验证 Web 与 Bridge 闭环。 |
 
@@ -57,8 +57,9 @@ src/
 一个画板对应一个 UI Prefab 编辑任务。
 
 - 新建画板：创建一个新的临时 Prefab，首次保存时由用户输入 Prefab 名称和相对目录。
-- 打开 Prefab：为现存 Prefab 创建独立编辑画板，保存时默认写回来源路径。
-- 插入 Prefab：把现存 Prefab 拖入当前编辑区时，它会成为当前画板里的普通子节点。
+- 打开 Prefab：把项目 UI 拖到画板栏空白处，为现存 Prefab 创建编辑画板；同一个来源 Prefab 同时只允许打开一次，再次打开会切回已有画板并提示“已有同名 UI 被打开”。
+- 插入 Prefab：把项目 UI 拖到画板栏里的某个画板根节点，或拖到编辑区的画板内，它会成为该画板里的普通子节点，不再关联原 Prefab。
+- 保存与另存为：现存 UI 的“保存”默认写回当前来源路径；新建 UI 首次保存会要求输入 Prefab 名称和相对目录；“另存为”始终要求输入新路径，并把当前画板切换为新保存路径的编辑任务。
 - 刷新恢复：浏览器刷新后，Web 只恢复画板列表和临时 Prefab 路径，再向 Bridge 读取最新 Unity 状态。
 - 关闭画板：关闭前确认未保存修改，随后释放 session 并删除临时工作对象。
 
@@ -96,6 +97,53 @@ Web 可以维护锁定、选中、展开折叠等交互状态；只要会改变 
 - Layout / Mask / Scroll / Toggle / Button 等常用 UI 视觉组件字段。
 
 脚本引用、事件接线、Lua/schema 绑定、业务数据字段和非白名单组件结构不作为普通编辑项暴露。
+
+### 当前可编辑控件与字段
+
+当前主流程面向 UGUI 常用视觉编辑，不面向程序接线编辑。
+
+已支持创建或插入：
+
+- Frame / 空容器。
+- Text。
+- Image。
+- RawImage。
+- Button。
+- Toggle。
+- ScrollView。
+- InputField。
+- 现有 UI Prefab / 组件 Prefab：可插入到画板或指定节点下。
+
+已支持修改的常用字段：
+
+- 节点：名称、显示 / 隐藏、删除、复制 / 粘贴、编组 / 解组、层级重排、改父节点。
+- 变换：X、Y、W、H、旋转、缩放、锚点、Pivot。
+- Text：文本、富文本、字体、字号、颜色、样式、对齐、溢出、行距、Best Fit、Raycast。
+- Image：图片引用、颜色、透明度、显示图像、Raycast、Image Type、Fill、Preserve Aspect、Use Sprite Mesh、Set Native Size。
+- Button：Interactable、Transition、ColorBlock 的 normal / highlighted / pressed / disabled、colorMultiplier、fadeDuration。
+- Toggle：Interactable、初始 isOn。
+- ScrollRect：水平 / 垂直滚动开关。
+- Mask / RectMask2D：启用、类型、showGraphic。
+- Layout：LayoutElement、HorizontalLayoutGroup、VerticalLayoutGroup、GridLayoutGroup、ContentSizeFitter。
+- 效果：Graphic Outline、Text Outline、Text Shadow。
+- 容器透明度：没有 Graphic 的容器使用 CanvasGroup alpha。
+
+目前隐藏或只读的常用项：
+
+- Button 上是否新增 / 移除 Image 组件：组件结构变更不在普通视觉字段契约内，当前只读。
+- Image mirror 镜像类型：尚未确认 Unity 字段契约。
+- Text Gradient：尚未确认项目内对应组件和字段映射。
+- 九宫格 Sprite border 数值编辑：更接近图片 import 设置，不作为普通 Prefab 字段开放。
+- 泛背景色：不使用 Web 式 background；必须落到具体 Image、Text、RawImage 或 CanvasGroup 字段。
+- Button / Toggle / Input 等事件、LuaBehaviour、脚本字段、schema 或业务绑定字段：受保护，不在 UI 人员编辑范围内。
+
+后续优先补强方向：
+
+- InputField 详细字段。
+- Slider。
+- Dropdown。
+- Animator / 特效引用。
+- 项目自定义 UI 组件的安全字段白名单。
 
 ### 组件与 Prefab 入口
 
@@ -226,6 +274,8 @@ pointer move
 Assets/HotRes2/UIs/Prefabs
 ```
 
+另存为也使用同一套路径输入规则。另存成功后，当前画板的来源路径会变成新的 Prefab 路径，后续普通保存写回这个新路径。
+
 ### 5. 浏览器刷新恢复
 
 ```text
@@ -302,7 +352,7 @@ UIEditor_new/
 | 文件 | 作用 |
 | --- | --- |
 | `src/App.tsx` | 主界面、画板入口、快捷键和整体布局。 |
-| `src/components/Canvas/BridgeSnapshotCanvas.tsx` | Unity 截图底图、bbox 命中、选区、标尺、辅助线、测量和批注层。 |
+| `src/components/Canvas/BridgeMainCanvas.tsx` | 主画布。Unity Editor Bridge 截图底图、bbox 命中、选区、标尺、辅助线、测量和批注层。 |
 | `src/components/Canvas/SceneToolbar.tsx` | 左侧画布工具栏。 |
 | `src/components/Panels/LayerPanel.tsx` | 画板列表、节点树、图层操作和右键菜单。 |
 | `src/components/Panels/PropertyPanel.tsx` | 白名单视觉字段编辑。 |
@@ -318,7 +368,7 @@ UIEditor_new/
 默认地址：
 
 ```text
-http://127.0.0.1:8082
+http://127.0.0.1:18082
 ```
 
 核心端点：
@@ -359,7 +409,7 @@ http://127.0.0.1:8082
 ### 前置条件
 
 - Unity 工程已打开，并能编译 `Assets/Editor/UIEditorNew/` 下的 Editor Bridge。
-- Bridge 监听端口默认为 `8082`。
+- Bridge 监听端口默认为 `18082`。
 - Web 开发服务监听端口默认为 `4105`。
 - Node 依赖已安装。
 - 需要编辑或保存的 Prefab 位于 Unity 工程可访问路径下。
@@ -369,7 +419,7 @@ http://127.0.0.1:8082
 在 Unity Editor 中启动 UIEditorNew Bridge。启动后检查：
 
 ```text
-http://127.0.0.1:8082/health
+http://127.0.0.1:18082/health
 ```
 
 ### 启动 Web
@@ -431,7 +481,7 @@ npm run smoke:thumbnail-render
 ### Web 无法连接 Bridge
 
 - 检查 Unity Bridge 是否启动。
-- 打开 `http://127.0.0.1:8082/health`，确认返回可用状态。
+- 打开 `http://127.0.0.1:18082/health`，确认返回可用状态。
 - 确认端口没有被其他进程占用。
 
 ### 点击操作后画面不更新
