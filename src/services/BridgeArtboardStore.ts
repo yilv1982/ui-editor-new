@@ -306,6 +306,20 @@ function getActiveArtboard(state = useEditorStore.getState()): Artboard | null {
   return page?.artboards.find((item) => item.id === state.activeArtboardId) ?? null;
 }
 
+export function isEmptyLocalArtboard(artboard: Artboard | null | undefined): boolean {
+  if (!artboard) return false;
+  if (artboard.bridgeSessionId || artboard.bridgeWorkingPrefabPath || artboard.sourcePrefabPath) return false;
+  if (artboard.rootIds?.length) return false;
+  return Object.keys(artboard.nodes ?? {}).length === 0;
+}
+
+export function shouldMaterializeBridgeArtboard(artboard: Artboard | null | undefined): boolean {
+  if (!artboard || artboard.bridgeSessionId) return false;
+  if (artboard.bridgeWorkingPrefabPath || artboard.sourcePrefabPath) return true;
+  if (artboard.rootIds?.length) return true;
+  return Object.keys(artboard.nodes ?? {}).length > 0;
+}
+
 function findOpenSourceArtboard(prefabPath: string): { pageId: string; artboard: Artboard } | null {
   const target = prefabIdentity(prefabPath);
   if (!target) return null;
@@ -613,6 +627,11 @@ export async function openPrefabInNewArtboard(prefabPath: string) {
   }
   const name = basename(prefabPath);
   const state = useEditorStore.getState();
+  const activePage = state.pages.find((item) => item.id === state.activePageId);
+  const activeArtboard = activePage?.artboards.find((item) => item.id === state.activeArtboardId) ?? null;
+  const replaceActivePlaceholder = isEmptyLocalArtboard(activeArtboard)
+    ? { pageId: state.activePageId, artboardId: state.activeArtboardId }
+    : null;
   const opened = await editorBridgeClient.openPrefab(prefabPath, 'temp-copy', {
     width: state.previewWidth,
     height: state.previewHeight,
@@ -626,6 +645,11 @@ export async function openPrefabInNewArtboard(prefabPath: string) {
     `已打开 UI: ${opened.session.sourcePrefabPath}`,
     sourcePrefabPath,
   );
+  if (replaceActivePlaceholder) {
+    activateArtboard(replaceActivePlaceholder.pageId, replaceActivePlaceholder.artboardId);
+    updateActiveArtboard(patch, selectedNodeId ? [selectedNodeId] : []);
+    return;
+  }
   useEditorStore.getState().addArtboard({
     name,
     artboard: patch,

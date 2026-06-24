@@ -56,6 +56,7 @@ public static partial class UIEditorNewBridgeCore
                 Action prime = () =>
                 {
                     SetLayerRecursive(root, CaptureLayer);
+                    PrepareNguiCamerasForCaptureLayer(root);
                     PrimeNguiFrame(root);
                 };
                 if (timing != null) timing.Measure("snapshot.ngui.prime", prime);
@@ -81,6 +82,7 @@ public static partial class UIEditorNewBridgeCore
                     rt.Create();
                     camera.targetTexture = rt;
                     if (camera.orthographic && layoutHeight > 0) camera.aspect = (float)layoutWidth / layoutHeight;
+                    camera.ResetProjectionMatrix();
                     camera.Render();
 
                     RenderTexture.active = rt;

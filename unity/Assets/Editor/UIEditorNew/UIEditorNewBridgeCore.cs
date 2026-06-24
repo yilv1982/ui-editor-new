@@ -13,7 +13,7 @@ public static partial class UIEditorNewBridgeCore
     private const string PrefabRoot = "Assets/HotRes2/UIs/Prefabs";
     private const string TempPrefabRoot = "Assets/Temp/UIEditorNew";
     private const string SnapshotFolder = "Temp/UIEditorNew/Snapshots";
-    private const string BridgeVersion = "UIEditor_new-bridge-mvp-74-ugui-jpeg";
+    private const string BridgeVersion = "UIEditor_new-bridge-mvp-75-ngui-camera-layer";
     private const int CaptureLayer = 31;
     private const int SnapshotJpegQuality = 80;
     private const double MemoryAutosaveIdleSeconds = 15.0;

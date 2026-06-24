@@ -12,6 +12,7 @@ import {
   refreshActiveBridgeSnapshot,
   reparentNodeOnBridge,
   resizeNodeOnBridge,
+  shouldMaterializeBridgeArtboard,
   syncNodeVisualDelta,
 } from '../../services/BridgeArtboardStore';
 import { registerDropTarget } from '../../utils/customDrag';
@@ -477,6 +478,7 @@ export default function BridgeMainCanvas() {
 
   useEffect(() => {
     if (activeArtboard?.bridgeSessionId || loading) return;
+    if (!shouldMaterializeBridgeArtboard(activeArtboard)) return;
     setLoading(true);
     setError(null);
     void ensureActiveBridgeArtboard()

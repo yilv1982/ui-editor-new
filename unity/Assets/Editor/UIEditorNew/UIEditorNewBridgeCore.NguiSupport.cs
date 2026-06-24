@@ -266,6 +266,7 @@ public static partial class UIEditorNewBridgeCore
     {
         if (root == null) return;
         SetLayerRecursive(root, CaptureLayer);
+        PrepareNguiCamerasForCaptureLayer(root);
 
         Component[] components = root.GetComponentsInChildren<Component>(true);
         for (int i = 0; i < components.Length; i++)
@@ -277,13 +278,26 @@ public static partial class UIEditorNewBridgeCore
         }
 
         // 离屏 root 在编辑器非播放态不会被 Unity 自动 tick / Start，必须显式驱动 NGUI 生命周期。
-        // PrimeNguiFrame 内部按序：Start panel/widget → widget.CreatePanel 关联 → anchors → MarkAsChanged
+        // PrimeNguiFrame 内部按序：Start panel/widget → widget.CreatePanel 关联 → 显式 UIAnchor → MarkAsChanged
         // → panel.UpdateSelf 填几何建 drawcall。
         PrimeNguiFrame(root);
     }
 
+    private static void PrepareNguiCamerasForCaptureLayer(GameObject root)
+    {
+        if (root == null) return;
+        int captureMask = 1 << CaptureLayer;
+        Camera[] cameras = root.GetComponentsInChildren<Camera>(true);
+        for (int i = 0; i < cameras.Length; i++)
+        {
+            Camera camera = cameras[i];
+            if (camera == null) continue;
+            camera.cullingMask |= captureMask;
+        }
+    }
+
     // 触发一帧 NGUI 几何重建：先确保 panel/widget 已 Start（mStarted）并完成 widget→panel 关联，
-    // 再 anchors 更新、MarkAsChanged、panel.UpdateSelf。截图前调用。
+    // 再更新显式 UIAnchor、MarkAsChanged、panel.UpdateSelf。截图前调用。
     private static void PrimeNguiFrame(GameObject root)
     {
         if (root == null) return;
@@ -305,18 +319,15 @@ public static partial class UIEditorNewBridgeCore
             InvokeReflectedMethod(component, "Start");
             InvokeReflectedMethod(component, "CreatePanel");
         }
-        // 3. anchors / 布局更新。
+        // 3. 只驱动显式 UIAnchor。不要对所有 UIRect/UIPanel 强制 Reset/UpdateAnchors：
+        // 离屏相机若未被 NGUI 识别，UIRect.Update 会把已序列化好的锚点布局按错误上下文重算。
         for (int i = 0; i < components.Length; i++)
         {
             Component component = components[i];
             if (component == null) continue;
             Type type = component.GetType();
-            if (IsTypeOrBaseName(type, "UIRoot") || IsTypeOrBaseName(type, "UIRect") || IsTypeOrBaseName(type, "UIAnchor"))
-            {
-                InvokeReflectedMethod(component, "ResetAnchors");
-                InvokeReflectedMethod(component, "Update");
+            if (IsTypeOrBaseName(type, "UIAnchor"))
                 InvokeReflectedMethod(component, "UpdateAnchors");
-            }
         }
         for (int i = 0; i < components.Length; i++)
         {
@@ -347,7 +358,11 @@ public static partial class UIEditorNewBridgeCore
     private static Camera EnsureSessionNguiCamera(SessionState session, GameObject root)
     {
         if (session == null) return null;
-        if (session.nguiCamera != null) return session.nguiCamera;
+        if (session.nguiCamera != null)
+        {
+            ConfigureSessionNguiCamera(session, root, session.nguiCamera);
+            return session.nguiCamera;
+        }
 
         Scene scene = EnsureSessionPreviewScene(session);
         GameObject cameraGo = new GameObject("__UIEditorNew_NguiCam__");
@@ -356,6 +371,27 @@ public static partial class UIEditorNewBridgeCore
             SceneManager.MoveGameObjectToScene(cameraGo, scene);
 
         Camera camera = cameraGo.AddComponent<Camera>();
+        ConfigureSessionNguiCamera(session, root, camera);
+        session.nguiCamera = camera;
+        return camera;
+    }
+
+    private static void ConfigureSessionNguiCamera(SessionState session, GameObject root, Camera camera)
+    {
+        if (session == null || camera == null) return;
+
+        Scene scene = EnsureSessionPreviewScene(session);
+        RenderTexture previousTarget = camera.targetTexture;
+        Camera sourceCamera = FindBestCaptureCamera(root);
+        bool copiedSourceCamera = sourceCamera != null && sourceCamera != camera;
+        if (copiedSourceCamera)
+        {
+            camera.CopyFrom(sourceCamera);
+            camera.targetTexture = previousTarget;
+            camera.transform.position = sourceCamera.transform.position;
+            camera.transform.rotation = sourceCamera.transform.rotation;
+        }
+
         camera.enabled = false; // 只在 RenderSnapshot 手动 Render，不参与任何自动渲染循环
         // 关键：把相机绑定到 session 私有 preview scene。Camera.scene 不为 null 时相机只渲染该 scene 的内容
         // （Unity 仅支持 NewPreviewScene 创建的 scene）。这让普通 camera.Render() 能拍到 preview scene 里的
@@ -368,20 +404,19 @@ public static partial class UIEditorNewBridgeCore
         camera.cullingMask = ~0;
         camera.allowHDR = false;
         camera.allowMSAA = false;
-        camera.nearClipPlane = 0.01f;
-        camera.farClipPlane = 3000f;
 
-        // NGUI 正交相机：UIRoot 把内容归一到像素尺度（1 世界单位 ≈ 1 像素），内容以原点为中心。
-        // 因此正交相机看向 -Z、orthographicSize = 画板高度/2 即可与 Game View 取景一致。
-        // 不直接复制 prefab 自带相机的 orthographicSize（NGUI 场景相机常为 size=1，会导致取景缩成一点）。
-        int h = session.snapshotHeight > 0 ? session.snapshotHeight : 1920;
-        camera.orthographic = true;
-        camera.orthographicSize = h / 2f;
-        camera.transform.position = new Vector3(0f, 0f, -1000f);
-        camera.transform.rotation = Quaternion.identity;
+        if (!copiedSourceCamera)
+        {
+            camera.nearClipPlane = 0.01f;
+            camera.farClipPlane = 3000f;
 
-        session.nguiCamera = camera;
-        return camera;
+            // 没有 prefab 自带相机时，按画板像素坐标构造兜底正交相机。
+            int h = session.snapshotHeight > 0 ? session.snapshotHeight : 1920;
+            camera.orthographic = true;
+            camera.orthographicSize = h / 2f;
+            camera.transform.position = new Vector3(0f, 0f, -1000f);
+            camera.transform.rotation = Quaternion.identity;
+        }
     }
 
     private static void DestroySessionNguiCamera(SessionState session)
