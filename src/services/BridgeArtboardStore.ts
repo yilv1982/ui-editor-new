@@ -465,6 +465,45 @@ async function artboardFromBridgeState(
   };
 }
 
+async function artboardPatchFromBridgeState(
+  response: ArtboardStateResponse,
+  previousNodes: Record<string, UINode>,
+  name: string,
+  status: string,
+  sourcePrefabPath: string | null,
+): Promise<{ patch: Partial<Artboard>; selectedNodeId: string | null }> {
+  const nodes: Record<string, UINode> = {};
+  response.nodes.forEach((node) => {
+    const mapped = mapBridgeNode(node);
+    mapped.locked = !!previousNodes[node.nodeId]?.locked;
+    nodes[node.nodeId] = mapped;
+  });
+  const rootIds = response.nodes.filter((node) => !node.parentId).map((node) => node.nodeId);
+  const snapshot = normalizeSnapshot(response.snapshot);
+  const snapshotUrl = snapshot ? await editorBridgeClient.snapshotUrl(snapshot) : null;
+  const selectedNodeId = response.selectedNodeId ?? pickDefaultSelection(snapshot, response.rootNodeId);
+  return {
+    patch: {
+      name,
+      nodes,
+      rootIds: rootIds.length > 0 ? rootIds : [response.rootNodeId].filter(Boolean),
+      sourcePrefabPath,
+      bridgeSessionId: response.session.sessionId,
+      bridgeWorkingPrefabPath: response.session.workingPrefabPath,
+      bridgeTargetPrefabPath: sourcePrefabPath || defaultTargetFor(name),
+      bridgeRevision: response.revision,
+      bridgeRootNodeId: response.rootNodeId,
+      bridgeSnapshot: snapshot,
+      bridgeSnapshotUrl: snapshotUrl,
+      bridgeDirty: response.dirty,
+      bridgeUndoAvailable: response.undoAvailable,
+      bridgeRedoAvailable: response.redoAvailable,
+      bridgeStatus: status,
+    },
+    selectedNodeId,
+  };
+}
+
 export async function applyBridgeStateToActiveArtboard(response: ArtboardStateResponse, status?: string, selectedIdsOverride?: string[]) {
   const nodes: Record<string, UINode> = {};
   const previousNodes = getActiveArtboard()?.nodes ?? useEditorStore.getState().nodes;
@@ -573,8 +612,25 @@ export async function openPrefabInNewArtboard(prefabPath: string) {
     return;
   }
   const name = basename(prefabPath);
-  useEditorStore.getState().addArtboard({ name });
-  await openPrefabInActiveArtboard(prefabPath);
+  const state = useEditorStore.getState();
+  const opened = await editorBridgeClient.openPrefab(prefabPath, 'temp-copy', {
+    width: state.previewWidth,
+    height: state.previewHeight,
+  });
+  const response = await stateFromSession(opened.session);
+  const sourcePrefabPath = opened.session.sourcePrefabPath || null;
+  const { patch, selectedNodeId } = await artboardPatchFromBridgeState(
+    response,
+    {},
+    name,
+    `已打开 UI: ${opened.session.sourcePrefabPath}`,
+    sourcePrefabPath,
+  );
+  useEditorStore.getState().addArtboard({
+    name,
+    artboard: patch,
+    selectedIds: selectedNodeId ? [selectedNodeId] : [],
+  });
 }
 
 export async function insertPrefabIntoArtboard(artboardId: string, prefabPath: string, point: { x: number; y: number }, pageId?: string) {

@@ -374,7 +374,7 @@ interface EditorState {
   reorderPages: (sourceId: string, targetId: string, position: 'before' | 'after') => void;
 
   // 画板操作
-  addArtboard: (options?: { name?: string; x?: number; y?: number; pageId?: string }) => string;
+  addArtboard: (options?: { name?: string; x?: number; y?: number; pageId?: string; artboard?: Partial<Artboard>; selectedIds?: string[] }) => string;
   deleteArtboard: (artboardId: string, pageId?: string) => void;
   renameArtboard: (artboardId: string, name: string, pageId?: string) => void;
   setActiveArtboard: (artboardId: string) => void;
@@ -1294,30 +1294,33 @@ export const useEditorStore = create<EditorState>((set, get) => {
     const defaultX = last ? last.x : 0;
     const defaultY = last ? last.y + last.height + 200 : 0;
 
+    const initial = options?.artboard;
     const newArtboard: Artboard = {
+      ...initial,
       id: newId,
-      name: options?.name ?? `画板 ${existing.length + 1}`,
-      x: options?.x ?? defaultX,
-      y: options?.y ?? defaultY,
-      width: get().previewWidth,
-      height: get().previewHeight,
-      nodes: {},
-      rootIds: [],
-      sourcePrefabPath: null,
+      name: options?.name ?? initial?.name ?? `画板 ${existing.length + 1}`,
+      x: options?.x ?? initial?.x ?? defaultX,
+      y: options?.y ?? initial?.y ?? defaultY,
+      width: initial?.width ?? get().previewWidth,
+      height: initial?.height ?? get().previewHeight,
+      nodes: initial?.nodes ? { ...initial.nodes } : {},
+      rootIds: initial?.rootIds ? [...initial.rootIds] : [],
+      sourcePrefabPath: initial?.sourcePrefabPath ?? null,
     };
     const nextPages = [...flushedPages];
     nextPages[pi] = { ...page, artboards: [...existing, newArtboard], activeArtboardId: newId };
 
     // 只有在添加到当前 active page 时才切镜像
     if (pageId === state.activePageId) {
+      const selectedIds = options?.selectedIds ?? [];
       set({
         pages: nextPages,
         activeArtboardId: newId,
-        nodes: {},
-        rootIds: [],
-        sourcePrefabPath: null,
-        selectedIds: [],
-        selectedArtboardId: newId,
+        nodes: { ...newArtboard.nodes },
+        rootIds: [...newArtboard.rootIds],
+        sourcePrefabPath: newArtboard.sourcePrefabPath,
+        selectedIds,
+        selectedArtboardId: selectedIds.length > 0 ? null : newId,
         selectedAnnotationIds: [],
       });
     } else {
