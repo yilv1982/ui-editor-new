@@ -16,6 +16,8 @@
 - `component-library-io-contract.md`：UI 公共组件库与 `UIEditor_new` 之间的输入/输出契约。
 - `trial-samples.md`：试点 UI 样本的组件计划、受控编辑结果和规则沉淀。
 - `webgl-dependency-map.md`：渲染和同步依赖盘点记录。
+- `ngui-rewrite-plan.md`：NGUI 支持完整重写方案（根因、常驻隔离实例生命周期、桥侧/前端改造、bbox 同源、延迟链路、实施步骤）。
+- `ngui-isolation-change.md`：为根治 NGUI 渲染污染对客户端事实源 NGUI 源码（`UIDrawCall.cs`）的改动记录（原因、机制、改了哪、三重守卫、验证）。
 
 ## 后续文档主题
 

@@ -301,6 +301,7 @@ public static partial class UIEditorNewBridgeCore
         });
     }
 
+    // 临时诊断端点：返回 NGUI working root 子树与 UIDrawCall 的 layer/scene/active 实况，定位空图根因。
     private static string RenderSnapshot(string json)
     {
         RenderSnapshotRequest request = JsonUtility.FromJson<RenderSnapshotRequest>(json);
@@ -1384,13 +1385,14 @@ public static partial class UIEditorNewBridgeCore
     {
         GameObject source = GetWorkingRoot(session);
         if (source == null) return null;
-        // source 全程 suspended（NGUI 组件 disabled），Instantiate 出的 clone 不会触发 NGUI 回调，
-        // 故不再 resume source —— 这正是旧实现污染 source、导致节点重复的根因。
         GameObject clone = UnityEngine.Object.Instantiate(source);
         clone.name = source.name;
         clone.hideFlags = HideFlags.HideAndDontSave;
         MoveRootToScene(clone, EnsureSessionPreviewScene(session));
-        PrepareWorkingRootForFramework(session, clone);
+        // 冻结快照：undo/redo 栈里的 clone 不参与编辑也不参与渲染。SetActive(false) 让 NGUI
+        // [ExecuteInEditMode] 走 OnDisable 自动销毁其 drawcall，不在 previewScene 里产生几何，
+        // 也不会被任何相机渲染。被 ReplaceWorkingRoot 取出设为活动 root 时再解冻（SetActive(true)+EnableAndPrimeNgui）。
+        clone.SetActive(false);
         return clone;
     }
 
@@ -1402,6 +1404,8 @@ public static partial class UIEditorNewBridgeCore
         if (session.workingRoot != null)
         {
             session.workingRoot.hideFlags = HideFlags.HideAndDontSave;
+            if (!session.workingRoot.activeSelf)
+                session.workingRoot.SetActive(true); // 从冻结快照恢复为活动 root
             if (!loadedFromPrefabContents)
                 MoveRootToScene(session.workingRoot, EnsureSessionPreviewScene(session));
             PrepareWorkingRootForFramework(session, session.workingRoot);
@@ -1508,6 +1512,7 @@ public static partial class UIEditorNewBridgeCore
         DestroyRootList(session, session.redoStack);
         if (session.undoStack != null) session.undoStack.Clear();
         if (session.redoStack != null) session.redoStack.Clear();
+        DestroySessionNguiCamera(session);
         CloseSessionPreviewScene(session);
     }
 
@@ -3628,6 +3633,10 @@ public static partial class UIEditorNewBridgeCore
         public double lastFlushTime;
         public List<GameObject> undoStack;
         public List<GameObject> redoStack;
+        // NGUI 常驻隔离渲染：working root 在 session 私有 previewScene 内常开运行（NGUI [ExecuteInEditMode]
+        // 实时构建 drawcall，drawcall 因 UIDrawCall 源码改动跟随 previewScene，不溢出主工程）。
+        // nguiCamera 是挂在 previewScene 内的常驻离屏相机，截图与 bbox 投影共用它，保证同源对齐。
+        public Camera nguiCamera;
         public readonly Dictionary<int, bool> suspendedNguiBehaviourStates = new Dictionary<int, bool>();
         public readonly Dictionary<Transform, string> fileIdByTransform = new Dictionary<Transform, string>();
         public int fileIdMapRevision = -1;

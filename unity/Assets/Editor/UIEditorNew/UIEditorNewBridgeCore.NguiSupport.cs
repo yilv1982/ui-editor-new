@@ -326,6 +326,145 @@ public static partial class UIEditorNewBridgeCore
         }
     }
 
+    // ===== NGUI 常驻隔离渲染（Step 2/3 重写核心）=====
+    // 设计：working root 常驻 session 私有 previewScene 内、NGUI 组件全程 enabled=true 实时运行。
+    // NGUI [ExecuteInEditMode] 自动构建 drawcall，drawcall 因 UIDrawCall.Create 源码改动（跟随 manager
+    // 所在非 active scene）落进 previewScene，不溢出主工程 Game/Scene View。截图与 bbox 复用同一常驻
+    // root + 同一常驻相机，nodeId 与 export-node-tree 同源（都走 BuildNodeId 的结构索引），天然对齐。
+
+    // 让 working root（或 undo 恢复出的 root）在隔离场景里"活起来"：进 CaptureLayer、enable 所有 NGUI 组件、
+    // 完整初始化并构建首帧几何。幂等，可重复调用。
+    private static void EnableAndPrimeNgui(SessionState session, GameObject root)
+    {
+        if (root == null) return;
+        SetLayerRecursive(root, CaptureLayer);
+
+        Component[] components = root.GetComponentsInChildren<Component>(true);
+        for (int i = 0; i < components.Length; i++)
+        {
+            Behaviour behaviour = components[i] as Behaviour;
+            if (behaviour == null) continue;
+            if (IsNguiComponent(behaviour) && !behaviour.enabled)
+                behaviour.enabled = true;
+        }
+        if (session != null) session.suspendedNguiBehaviourStates.Clear();
+
+        // 离屏 root 在编辑器非播放态不会被 Unity 自动 tick / Start，必须显式驱动 NGUI 生命周期。
+        // PrimeNguiFrame 内部按序：Start panel/widget → widget.CreatePanel 关联 → anchors → MarkAsChanged
+        // → panel.UpdateSelf 填几何建 drawcall。
+        PrimeNguiFrame(root);
+    }
+
+    // 触发一帧 NGUI 几何重建：先确保 panel/widget 已 Start（mStarted）并完成 widget→panel 关联，
+    // 再 anchors 更新、MarkAsChanged、panel.UpdateSelf。截图前调用。
+    private static void PrimeNguiFrame(GameObject root)
+    {
+        if (root == null) return;
+        Component[] components = root.GetComponentsInChildren<Component>(true);
+
+        // 1. 先 Start 所有 UIPanel（设 mStarted，使后续 widget CreatePanel 能 UIPanel.Find 到）。
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component component = components[i];
+            if (component != null && IsTypeOrBaseName(component.GetType(), "UIPanel"))
+                InvokeReflectedMethod(component, "Start");
+        }
+        // 2. Start 所有 UIWidget 并显式 CreatePanel，建立 widget→panel 关联。
+        //    离屏 LoadPrefabContents root 的 widget 不会被 Unity 自动 Start，panel 始终为 null、不填几何。
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component component = components[i];
+            if (component == null || !IsTypeOrBaseName(component.GetType(), "UIWidget")) continue;
+            InvokeReflectedMethod(component, "Start");
+            InvokeReflectedMethod(component, "CreatePanel");
+        }
+        // 3. anchors / 布局更新。
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component component = components[i];
+            if (component == null) continue;
+            Type type = component.GetType();
+            if (IsTypeOrBaseName(type, "UIRoot") || IsTypeOrBaseName(type, "UIRect") || IsTypeOrBaseName(type, "UIAnchor"))
+            {
+                InvokeReflectedMethod(component, "ResetAnchors");
+                InvokeReflectedMethod(component, "Update");
+                InvokeReflectedMethod(component, "UpdateAnchors");
+            }
+        }
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component component = components[i];
+            if (component == null) continue;
+            Type type = component.GetType();
+            if (IsTypeOrBaseName(type, "UITable") || IsTypeOrBaseName(type, "UIGrid"))
+                InvokeReflectedMethod(component, "Reposition");
+        }
+        // 4. 标记 widget 几何变更。
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component component = components[i];
+            if (component != null && IsTypeOrBaseName(component.GetType(), "UIWidget"))
+                InvokeReflectedMethod(component, "MarkAsChanged");
+        }
+        // 5. 驱动 panel 填充 widget 几何并建 drawcall（UpdateSelf 绕过 LateUpdate 帧守卫）。
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component component = components[i];
+            if (component != null && IsTypeOrBaseName(component.GetType(), "UIPanel"))
+                InvokeReflectedMethod(component, "UpdateSelf");
+        }
+    }
+
+    // 在 session 的 previewScene 内建一台常驻离屏相机；参数取自 prefab 自带相机（= Game View 相机口径），
+    // 没有则按画板尺寸构造正交相机。只渲染 CaptureLayer，截图与 bbox 投影共用它。
+    private static Camera EnsureSessionNguiCamera(SessionState session, GameObject root)
+    {
+        if (session == null) return null;
+        if (session.nguiCamera != null) return session.nguiCamera;
+
+        Scene scene = EnsureSessionPreviewScene(session);
+        GameObject cameraGo = new GameObject("__UIEditorNew_NguiCam__");
+        cameraGo.hideFlags = HideFlags.HideAndDontSave;
+        if (scene.IsValid() && scene.isLoaded)
+            SceneManager.MoveGameObjectToScene(cameraGo, scene);
+
+        Camera camera = cameraGo.AddComponent<Camera>();
+        camera.enabled = false; // 只在 RenderSnapshot 手动 Render，不参与任何自动渲染循环
+        // 关键：把相机绑定到 session 私有 preview scene。Camera.scene 不为 null 时相机只渲染该 scene 的内容
+        // （Unity 仅支持 NewPreviewScene 创建的 scene）。这让普通 camera.Render() 能拍到 preview scene 里的
+        // NGUI drawcall，同时该相机对主工程 Game/Scene View 完全不可见，达成物理隔离 + 可渲染。
+        if (scene.IsValid() && scene.isLoaded)
+            camera.scene = scene;
+        camera.clearFlags = CameraClearFlags.SolidColor;
+        // camera.scene 已把渲染限定在 previewScene 内，无需再靠 layer 区分；用 everything 兜底
+        // 避免 drawcall layer 与 CaptureLayer 不一致时漏拍。
+        camera.cullingMask = ~0;
+        camera.allowHDR = false;
+        camera.allowMSAA = false;
+        camera.nearClipPlane = 0.01f;
+        camera.farClipPlane = 3000f;
+
+        // NGUI 正交相机：UIRoot 把内容归一到像素尺度（1 世界单位 ≈ 1 像素），内容以原点为中心。
+        // 因此正交相机看向 -Z、orthographicSize = 画板高度/2 即可与 Game View 取景一致。
+        // 不直接复制 prefab 自带相机的 orthographicSize（NGUI 场景相机常为 size=1，会导致取景缩成一点）。
+        int h = session.snapshotHeight > 0 ? session.snapshotHeight : 1920;
+        camera.orthographic = true;
+        camera.orthographicSize = h / 2f;
+        camera.transform.position = new Vector3(0f, 0f, -1000f);
+        camera.transform.rotation = Quaternion.identity;
+
+        session.nguiCamera = camera;
+        return camera;
+    }
+
+    private static void DestroySessionNguiCamera(SessionState session)
+    {
+        if (session == null || session.nguiCamera == null) return;
+        UnityEngine.Object.DestroyImmediate(session.nguiCamera.gameObject);
+        session.nguiCamera = null;
+    }
+
+
     private static NguiStaticStateSnapshot CaptureNguiStaticState()
     {
         NguiStaticStateSnapshot snapshot = new NguiStaticStateSnapshot();
