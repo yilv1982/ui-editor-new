@@ -168,14 +168,13 @@ public static partial class UIEditorNewBridgeCore
 
     private static string CleanupRuntimeState(string json)
     {
-        RuntimeCleanupReport before = BuildRuntimeCleanupReport();
+        int sessionsBefore = Sessions.Count;
         CleanupBridgeRuntimeState();
-        RuntimeCleanupReport after = BuildRuntimeCleanupReport();
         return JsonUtility.ToJson(new RuntimeCleanupResponse
         {
             ok = true,
-            before = before,
-            after = after
+            sessionsBefore = sessionsBefore,
+            sessionsAfter = Sessions.Count
         });
     }
 
@@ -1320,7 +1319,6 @@ public static partial class UIEditorNewBridgeCore
             int index = session.undoStack.Count - 1;
             if (session.undoStack[index] != null)
             {
-                RemoveSuspendedNguiState(session, session.undoStack[index]);
                 UnityEngine.Object.DestroyImmediate(session.undoStack[index]);
             }
             session.undoStack.RemoveAt(index);
@@ -1525,9 +1523,8 @@ public static partial class UIEditorNewBridgeCore
         session.workingRootLoadedFromPrefabContents = false;
         try
         {
-            DisableNguiBehaviours(root);
-            CleanupNguiStaticPanelList(root);
-            RemoveSuspendedNguiState(session, root);
+            // 常驻实例方案：root 在 session PreviewScene 内、NGUI 组件常开。销毁 root 时 UIPanel.OnDisable
+            // 自动销毁其 drawcall；无需再做 suspend/静态表清理。
             if (loadedFromPrefabContents)
                 PrefabUtility.UnloadPrefabContents(root);
             else
@@ -1538,10 +1535,6 @@ public static partial class UIEditorNewBridgeCore
             if (root != null)
                 UnityEngine.Object.DestroyImmediate(root);
         }
-        finally
-        {
-            CleanupNguiStaticState();
-        }
     }
 
     private static void DestroyRootList(SessionState session, List<GameObject> roots)
@@ -1551,17 +1544,8 @@ public static partial class UIEditorNewBridgeCore
         {
             GameObject root = roots[i];
             if (root == null) continue;
-            try
-            {
-                DisableNguiBehaviours(root);
-                CleanupNguiStaticPanelList(root);
-                RemoveSuspendedNguiState(session, root);
-                UnityEngine.Object.DestroyImmediate(root);
-            }
-            finally
-            {
-                CleanupNguiStaticState();
-            }
+            // undo/redo 栈里是 SetActive(false) 冻结的实例，drawcall 已随 OnDisable 销毁；直接销毁实例即可。
+            UnityEngine.Object.DestroyImmediate(root);
         }
     }
 
@@ -3637,7 +3621,6 @@ public static partial class UIEditorNewBridgeCore
         // 实时构建 drawcall，drawcall 因 UIDrawCall 源码改动跟随 previewScene，不溢出主工程）。
         // nguiCamera 是挂在 previewScene 内的常驻离屏相机，截图与 bbox 投影共用它，保证同源对齐。
         public Camera nguiCamera;
-        public readonly Dictionary<int, bool> suspendedNguiBehaviourStates = new Dictionary<int, bool>();
         public readonly Dictionary<Transform, string> fileIdByTransform = new Dictionary<Transform, string>();
         public int fileIdMapRevision = -1;
         public int runtimeIdSeq;
@@ -3706,23 +3689,7 @@ public static partial class UIEditorNewBridgeCore
 
     [Serializable] private class BaseResponse { public bool ok; public ErrorInfo error; }
     [Serializable] public class ErrorInfo { public string code; public string message; }
-    [Serializable] private class RuntimeCleanupResponse { public bool ok; public RuntimeCleanupReport before; public RuntimeCleanupReport after; public ErrorInfo error; }
-    [Serializable] private class RuntimeCleanupReport
-    {
-        public int bridgeHiddenRoots;
-        public int bridgeLoadedSceneRoots;
-        public int bridgePreviewRoots;
-        public int nguiPanels;
-        public int bridgePanels;
-        public int panelWidgetDuplicates;
-        public int bridgeWidgetsInLivePanels;
-        public int nullPanelWidgets;
-        public int suspendedNguiBehaviours;
-        public int nguiDrawCalls;
-        public int bridgeDrawCalls;
-        public int orphanDrawCalls;
-        public string[] samples;
-    }
+    [Serializable] private class RuntimeCleanupResponse { public bool ok; public int sessionsBefore; public int sessionsAfter; public ErrorInfo error; }
     [Serializable] private class HealthResponse { public bool ok; public string name; public string version; public string loadId; public string loadedAtUtc; public string unityVersion; public string projectPath; public EditorStatus editor; public string[] capabilities; }
     [Serializable] public class EditorStatus { public bool isCompiling; public bool isUpdating; public bool isPlaying; public bool isPlayingOrWillChangePlaymode; public double timeSinceStartup; }
     [Serializable] private class CreateBlankRequest { public string name; public int width; public int height; public bool skipSnapshot; public bool profile; }
