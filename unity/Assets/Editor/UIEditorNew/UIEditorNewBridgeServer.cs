@@ -355,7 +355,9 @@ public static class UIEditorNewBridgeServer
     {
         fileName = Uri.UnescapeDataString(fileName ?? "");
         fileName = Path.GetFileName(fileName);
-        if (string.IsNullOrEmpty(fileName) || !fileName.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+        bool isPng = fileName.EndsWith(".png", StringComparison.OrdinalIgnoreCase);
+        bool isJpg = fileName.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) || fileName.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(fileName) || (!isPng && !isJpg))
         {
             WriteJson(stream, 400, "Bad Request", corsHeaders, "{\"ok\":false,\"error\":{\"code\":\"BAD_SNAPSHOT_PATH\",\"message\":\"invalid snapshot path\"}}");
             return;
@@ -368,9 +370,10 @@ public static class UIEditorNewBridgeServer
             return;
         }
 
+        string contentType = isJpg ? "image/jpeg" : "image/png";
         byte[] bytes = File.ReadAllBytes(path);
         WriteResponse(stream, 200, "OK",
-            corsHeaders + "Content-Type: image/png\r\nContent-Length: " + bytes.Length + "\r\n",
+            corsHeaders + "Content-Type: " + contentType + "\r\nContent-Length: " + bytes.Length + "\r\n",
             bytes);
     }
 

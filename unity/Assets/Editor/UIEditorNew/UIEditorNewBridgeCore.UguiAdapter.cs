@@ -16,6 +16,17 @@ public static partial class UIEditorNewBridgeCore
             return true;
         }
 
+        // UGUI 截图每次都是另起干净实例渲染（见 RenderSnapshot），working root 无需挂起任何组件，
+        // 也不存在 NGUI 那种 [ExecuteInEditMode] 叠层问题。这里保持 no-op，
+        // 避免对 UGUI 画板每次编辑都跑 NGUI 的全编辑器 Resources.FindObjectsOfTypeAll 扫描。
+        public void PrepareWorkingRoot(SessionState session, GameObject root)
+        {
+        }
+
+        public void AfterEditApplied(SessionState session, GameObject root)
+        {
+        }
+
         public bool RenderSnapshot(SessionState session, RenderSnapshotRequest request, GameObject prefab, int width, int height, string imageMode, Color background, out SnapshotRecord snapshot, out string errorCode, out string errorMessage, BridgeTiming timing)
         {
         snapshot = null;
@@ -24,10 +35,8 @@ public static partial class UIEditorNewBridgeCore
 
         GameObject root = null;
         Camera camera = null;
-        RenderTexture rt = null;
         RenderTexture previousRt = RenderTexture.active;
         Texture2D texture = null;
-        PreviewRenderUtility previewUtility = null;
         try
         {
             RectTransform canvasRect = null;
@@ -36,12 +45,14 @@ public static partial class UIEditorNewBridgeCore
 
             Action setupScene = () =>
             {
-                previewUtility = new PreviewRenderUtility(true);
                 root = new GameObject("__UIEditorNewSnapshot__");
                 root.hideFlags = HideFlags.HideAndDontSave;
-                previewUtility.AddSingleGO(root);
 
-                camera = previewUtility.camera;
+                GameObject cameraGo = new GameObject("__UIEditorNewSnapshot_Camera__");
+                cameraGo.hideFlags = HideFlags.HideAndDontSave;
+                cameraGo.transform.SetParent(root.transform, false);
+
+                camera = cameraGo.AddComponent<Camera>();
                 camera.transform.position = Vector3.zero;
                 camera.transform.rotation = Quaternion.identity;
                 camera.clearFlags = CameraClearFlags.SolidColor;
@@ -89,7 +100,9 @@ public static partial class UIEditorNewBridgeCore
 
             Action instantiatePrefab = () =>
             {
-                instance = UnityEngine.Object.Instantiate(prefab, canvasRect);
+                instance = PrefabUtility.InstantiatePrefab(prefab, canvasRect) as GameObject;
+                if (instance == null)
+                    instance = UnityEngine.Object.Instantiate(prefab, canvasRect);
                 if (instance == null)
                     throw new InvalidOperationException("Failed to instantiate prefab: " + session.workingPrefabPath);
                 instance.name = prefab.name;
@@ -126,7 +139,7 @@ public static partial class UIEditorNewBridgeCore
 
             Action renderCamera = () =>
             {
-                texture = RenderUguiPreviewToTexture(previewUtility, camera, width, height, () =>
+                texture = RenderUguiCameraToTexture(camera, width, height, () =>
                 {
                     camera.Render();
                     Canvas.ForceUpdateCanvases();
@@ -138,40 +151,37 @@ public static partial class UIEditorNewBridgeCore
 
             Action readPixels = () =>
             {
-                if (texture == null && rt != null)
-                {
-                    RenderTexture.active = rt;
-                    texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
-                    texture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-                    texture.Apply(false);
-                }
+                if (texture == null)
+                    throw new InvalidOperationException("UGUI render did not produce a texture");
                 ForceTextureAlphaOpaque(texture);
             };
             if (timing != null) timing.Measure("snapshot.readPixels", readPixels);
             else readPixels();
 
-            byte[] png = timing != null
-                ? timing.Measure("snapshot.encodePng", () => texture.EncodeToPNG())
-                : texture.EncodeToPNG();
+            // 截图只作视觉底图，不需要无损 PNG；JPEG 编码快数倍、体积更小。
+            // 渲染已 ForceTextureAlphaOpaque + 背景填充，无 alpha 需求，JPEG 不丢信息。
+            byte[] imageBytes = timing != null
+                ? timing.Measure("snapshot.encodePng", () => texture.EncodeToJPG(SnapshotJpegQuality))
+                : texture.EncodeToJPG(SnapshotJpegQuality);
 
             string snapshotId = Guid.NewGuid().ToString("N");
-            string fileName = snapshotId + ".png";
+            string fileName = snapshotId + ".jpg";
             string absolutePath = ResolveSnapshotPath(fileName);
             Action writePng = () =>
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(absolutePath));
-                File.WriteAllBytes(absolutePath, png);
+                File.WriteAllBytes(absolutePath, imageBytes);
             };
             if (timing != null) timing.Measure("snapshot.writePng", writePng);
             else writePng();
 
             SnapshotImage image = new SnapshotImage
             {
-                format = "png",
+                format = "jpg",
                 mode = imageMode,
                 path = (SnapshotFolder + "/" + fileName).Replace("\\", "/"),
                 url = "/snapshots/" + fileName,
-                dataUrl = imageMode == "base64" ? "data:image/png;base64," + Convert.ToBase64String(png) : null
+                dataUrl = imageMode == "base64" ? "data:image/jpeg;base64," + Convert.ToBase64String(imageBytes) : null
             };
 
             snapshot = new SnapshotRecord
@@ -198,46 +208,32 @@ public static partial class UIEditorNewBridgeCore
             {
                 RenderTexture.active = previousRt;
                 if (texture != null) UnityEngine.Object.DestroyImmediate(texture);
-                if (rt != null)
-                {
-                    if (camera != null && camera.targetTexture == rt) camera.targetTexture = null;
-                    rt.Release();
-                    UnityEngine.Object.DestroyImmediate(rt);
-                }
+                if (camera != null) camera.targetTexture = null;
                 if (root != null) UnityEngine.Object.DestroyImmediate(root);
-                CleanupUguiPreviewUtility(previewUtility, camera);
             };
             if (timing != null) timing.Measure("snapshot.cleanup", cleanup);
             else cleanup();
         }
         }
 
-        private static Texture2D RenderUguiPreviewToTexture(PreviewRenderUtility previewUtility, Camera camera, int width, int height, Action renderAction)
+        private static Texture2D RenderUguiCameraToTexture(Camera camera, int width, int height, Action renderAction)
         {
-            if (previewUtility == null || camera == null || width <= 0 || height <= 0) return null;
+            if (camera == null || width <= 0 || height <= 0) return null;
             RenderTexture previousActive = RenderTexture.active;
-            RenderTexture temporary = null;
-            bool previewOpen = false;
+            RenderTexture previousTarget = camera.targetTexture;
+            RenderTexture rt = null;
             try
             {
-                previewUtility.BeginPreview(new Rect(0f, 0f, width, height), GUIStyle.none);
-                previewOpen = true;
+                rt = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
+                rt.name = "__UIEditorNewSnapshot_UGUI_RT";
+                rt.Create();
+
+                camera.targetTexture = rt;
                 if (camera.orthographic && height > 0) camera.aspect = (float)width / height;
                 if (renderAction != null) renderAction();
                 else camera.Render();
-                Texture previewTexture = previewUtility.EndPreview();
-                previewOpen = false;
 
-                RenderTexture source = previewTexture as RenderTexture;
-                if (source == null && previewTexture != null)
-                {
-                    temporary = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32);
-                    Graphics.Blit(previewTexture, temporary);
-                    source = temporary;
-                }
-                if (source == null) return null;
-
-                RenderTexture.active = source;
+                RenderTexture.active = rt;
                 Texture2D texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
                 texture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
                 texture.Apply(false);
@@ -245,24 +241,14 @@ public static partial class UIEditorNewBridgeCore
             }
             finally
             {
-                if (previewOpen)
-                {
-                    try { previewUtility.EndPreview(); }
-                    catch {}
-                }
-                if (camera != null) camera.targetTexture = null;
-                if (previewUtility != null && previewUtility.camera != null) previewUtility.camera.targetTexture = null;
+                if (camera != null) camera.targetTexture = previousTarget;
                 RenderTexture.active = previousActive;
-                if (temporary != null) RenderTexture.ReleaseTemporary(temporary);
+                if (rt != null)
+                {
+                    rt.Release();
+                    UnityEngine.Object.DestroyImmediate(rt);
+                }
             }
-        }
-
-        private static void CleanupUguiPreviewUtility(PreviewRenderUtility previewUtility, Camera renderCamera)
-        {
-            if (renderCamera != null) renderCamera.targetTexture = null;
-            if (previewUtility == null) return;
-            if (previewUtility.camera != null) previewUtility.camera.targetTexture = null;
-            previewUtility.Cleanup();
         }
     }
 }

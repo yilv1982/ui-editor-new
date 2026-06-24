@@ -13,8 +13,9 @@ public static partial class UIEditorNewBridgeCore
     private const string PrefabRoot = "Assets/HotRes2/UIs/Prefabs";
     private const string TempPrefabRoot = "Assets/Temp/UIEditorNew";
     private const string SnapshotFolder = "Temp/UIEditorNew/Snapshots";
-    private const string BridgeVersion = "UIEditor_new-bridge-mvp-73-split-bbox";
+    private const string BridgeVersion = "UIEditor_new-bridge-mvp-74-ugui-jpeg";
     private const int CaptureLayer = 31;
+    private const int SnapshotJpegQuality = 80;
     private const double MemoryAutosaveIdleSeconds = 15.0;
     private const string FrameworkUGUI = "ugui";
     private const string FrameworkNGUI = "ngui";
@@ -390,7 +391,7 @@ public static partial class UIEditorNewBridgeCore
             if (!request.dryRun && applied.Count > 0)
             {
                 MarkSessionEdited(session);
-                CleanupNguiRuntimeObjects(root);
+                AfterEditAppliedForFramework(session, root);
                 session.appliedChanges.AddRange(applied);
             }
         }
@@ -1171,7 +1172,7 @@ public static partial class UIEditorNewBridgeCore
             });
 
             timing.Measure("markMemoryDirty", () => MarkSessionEdited(session));
-            timing.Measure("cleanupNguiRuntimeObjects", () => CleanupNguiRuntimeObjects(root));
+            timing.Measure("cleanupNguiRuntimeObjects", () => AfterEditAppliedForFramework(session, root));
             session.appliedChanges.AddRange(applied);
             return BuildArtboardResponseJson(session, selectedNodeId, includeSnapshot, timing);
         }
@@ -1201,7 +1202,7 @@ public static partial class UIEditorNewBridgeCore
             if (root == null)
                 return FailJson("PREFAB_NOT_FOUND", "Working prefab not found: " + session.workingPrefabPath);
             timing.Measure("mutator", () => mutator(root));
-            timing.Measure("cleanupNguiRuntimeObjects", () => CleanupNguiRuntimeObjects(root));
+            timing.Measure("cleanupNguiRuntimeObjects", () => AfterEditAppliedForFramework(session, root));
             timing.Measure("markMemoryDirty", () => MarkSessionEdited(session));
             if (refreshProtectedBaseline)
                 timing.Measure("refreshProtectedBaseline", () => RefreshProtectedBaseline(session));
@@ -1224,8 +1225,8 @@ public static partial class UIEditorNewBridgeCore
         GameObject root = timing != null ? timing.Measure("getWorkingRootForResponse", () => GetWorkingRoot(session)) : GetWorkingRoot(session);
         if (root == null)
             return FailJson("PREFAB_NOT_FOUND", "Working prefab not found: " + session.workingPrefabPath);
-        if (timing != null) timing.Measure("cleanupNguiRuntimeObjectsForResponse", () => CleanupNguiRuntimeObjects(root));
-        else CleanupNguiRuntimeObjects(root);
+        if (timing != null) timing.Measure("cleanupNguiRuntimeObjectsForResponse", () => AfterEditAppliedForFramework(session, root));
+        else AfterEditAppliedForFramework(session, root);
 
         List<NodeRecord> nodes = new List<NodeRecord>();
         if (timing != null)
@@ -1375,7 +1376,7 @@ public static partial class UIEditorNewBridgeCore
         // 把 working root 移进 session 私有 preview scene 并保持 NGUI 全程 suspended，
         // 使其永不被 NGUI 的 [ExecuteInEditMode] 回调重排子节点（否则 nodeId 漂移 + undo 快照污染）。
         MoveRootToScene(root, EnsureSessionPreviewScene(session));
-        SuspendNguiRendering(session, root);
+        PrepareWorkingRootForFramework(session, root);
         return root;
     }
 
@@ -1389,7 +1390,7 @@ public static partial class UIEditorNewBridgeCore
         clone.name = source.name;
         clone.hideFlags = HideFlags.HideAndDontSave;
         MoveRootToScene(clone, EnsureSessionPreviewScene(session));
-        SuspendNguiRendering(session, clone);
+        PrepareWorkingRootForFramework(session, clone);
         return clone;
     }
 
@@ -1403,7 +1404,7 @@ public static partial class UIEditorNewBridgeCore
             session.workingRoot.hideFlags = HideFlags.HideAndDontSave;
             if (!loadedFromPrefabContents)
                 MoveRootToScene(session.workingRoot, EnsureSessionPreviewScene(session));
-            SuspendNguiRendering(session, session.workingRoot);
+            PrepareWorkingRootForFramework(session, session.workingRoot);
         }
     }
 

@@ -16,6 +16,19 @@ public static partial class UIEditorNewBridgeCore
             return ShouldRenderAsNgui(session, prefab);
         }
 
+        // NGUI working root / clone 必须全程挂起渲染，否则 [ExecuteInEditMode] 会在 Scene/Game View 叠层、
+        // 重排子节点污染 nodeId 和 undo 快照。挂起内部已含一次 CleanupNguiRuntimeObjects。
+        public void PrepareWorkingRoot(SessionState session, GameObject root)
+        {
+            SuspendNguiRendering(session, root);
+        }
+
+        // 每次编辑后清理 NGUI 运行时产生的 panel/widget/drawcall 残留，避免叠层。
+        public void AfterEditApplied(SessionState session, GameObject root)
+        {
+            CleanupNguiRuntimeObjects(root);
+        }
+
         public bool RenderSnapshot(SessionState session, RenderSnapshotRequest request, GameObject prefab, int width, int height, string imageMode, Color background, out SnapshotRecord snapshot, out string errorCode, out string errorMessage, BridgeTiming timing)
         {
 
