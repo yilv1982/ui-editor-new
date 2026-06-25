@@ -18,7 +18,7 @@
 ### 节点级 framework 标记
 
 - `types/index.ts`：`UINode` 增 `framework?: 'ngui' | 'ugui'`。
-- `BridgeArtboardStore.mapBridgeNode`：由 `hasComponent(node, 'UIWidget'|'UILabel'|'UISprite'|'UITexture'|'UI2DSprite'|'UIPanel'|'UIRoot')` 判定 framework（节点级，mixed 画板逐节点正确）。
+- `BridgeArtboardStore.mapBridgeNode`：由 `hasComponent(node, 'UIWidget'|'UILabel'|'UISprite'|'UITexture'|'UI2DSprite'|'UIPanel'|'UIRoot')` 逐节点判定 framework。工具同时支持 UGUI 和 NGUI，但同一个 prefab 不会两种混着出现，无需处理 mixed 画板。
 - 注意 NGUI `UISprite.type` 多一个 `Advanced`，与 UGUI `Image.type` 语义不同。
 
 ### PropertyPanel 按框架分支
@@ -70,7 +70,6 @@
 ## P2：其他交互缺口
 
 - **缩略图 / 模板库 / 组件库 framework 标注**：组件库标注 framework，NGUI 组件用 NGUI 方式插入；模板库预览对 NGUI Prefab 适配。当前 `PrefabThumbnail`/`TemplateLibrary`/`ComponentLibrary` 不分 framework。
-- **mixed 画板**：plan 标已知限制，纯 NGUI/纯 UGUI 样本已覆盖，mixed 不支持。
 - **NGUI 字段只读提示**：哪些字段受保护不可改，前端没提示。
 - **depth 层级面板适配**：NGUI 用 depth 而非 sibling index 控制层叠，层级面板"上移/下移"对 NGUI 节点语义不同，需适配。
 
@@ -80,7 +79,7 @@
 | --- | --- | --- |
 | P0 | PropertyPanel 加 framework 分支 + NGUI 属性栏（UILabel/UISprite/UIWidget 基础字段） | 桥侧已支持，纯前端补 UI，NGUI 节点现在选了没法改 |
 | P0 | 桥侧补 `Widget.depth`/`Widget.pivot`/`Text.overflow` 的 Apply + Read | NGUI 核心视觉字段，桥+前端都要补 |
-| P1 | 控件创建按 framework 分支，NGUI 画板建 NGUI 控件或拒绝 UGUI | 避免混入破坏单路由 |
+| P1 | 控件创建按 framework 分支，NGUI 画板建 NGUI 控件或拒绝 UGUI | 避免在 NGUI 画板建出 UGUI 节点 |
 | P1 | 拖动节流真值回填 + abort（Step 8） | NGUI 常驻渲染成本高，拖动手感差 |
 | P2 | 缩略图/组件库 framework 标注 | 体验问题，不阻断编辑 |
-| P2 | mixed 画板、depth 层级面板适配、只读提示 | 已知限制，样本未覆盖 |
+| P2 | depth 层级面板适配、只读提示 | 已知缺口，样本未覆盖 |

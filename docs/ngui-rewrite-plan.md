@@ -86,7 +86,7 @@ UGUI 路径完全不动（UguiAdapter 每次截图自建临时实例渲染再销
 ## 前端属性栏按框架分支
 
 - `types/index.ts`：`UINode` 增 `framework?: 'ngui' | 'ugui'`。
-- `BridgeArtboardStore.ts` `mapBridgeNode`（117-268）：由 `hasComponent(node, 'UIWidget'|'UILabel'|'UISprite'|'UITexture'|'UI2DSprite'|'UIPanel'|'UIRoot')` 判定 framework（节点级，mixed 画板逐节点正确）。注意 NGUI `UISprite.type` 多一个 `Advanced`，与 UGUI `Image.type` 语义不同。
+- `BridgeArtboardStore.ts` `mapBridgeNode`（117-268）：由 `hasComponent(node, 'UIWidget'|'UILabel'|'UISprite'|'UITexture'|'UI2DSprite'|'UIPanel'|'UIRoot')` 逐节点判定 framework。工具同时支持 UGUI 和 NGUI，但同一 prefab 不会两种混着出现，不做 mixed 画板。注意 NGUI `UISprite.type` 多一个 `Advanced`，与 UGUI `Image.type` 语义不同。
 - `PropertyPanel.tsx`：抽出 `<UguiPropertySections>`（现有内容平移）+ 新建 `<NguiPropertySections>`；Transform 区块共用放分支之上；顶层按 `node.framework` 分支。
 
 NGUI 字段 → 桥 field/端点（复用现有 `apply-visual-patch`/`set-text`/`set-image`，不新增 HTTP 端点；桥侧 `ApplyNgui*Operation` 已用 UGUI 风格 field 名路由，1479-1525）：
@@ -143,7 +143,8 @@ Step 1-6 已完成并提交（`536a2cf` + `72dd7f4` 等），后续 `mvp-45`~`mv
 - **R2 常驻 PreviewScene 内存/泄漏**：`CloseSessionPreviewScene` 回收全部；`beforeAssemblyReload`/`Stop` 兜底关所有 scene；undo 栈 50 上限。Step6 重复开关 session+域重载验证。
 - **R3 UICamera `[ExecuteInEditMode]` 副作用**：先给常驻相机挂 UICamera（关 useMouse/useTouch），异常再退"不挂"。Step2 验证。
 - **R4 全局静态表常驻条目**：静态表有条目 ≠ 被渲染；若主工程编辑态有遍历 `UIPanel.list` 的全局操作受扰，退路是 close 时一次性剔除本 session 实例。
-- **R5 mixed 画板**：范围内样本为纯 NGUI/纯 UGUI，mixed 作已知限制；ScreenSpace-Overlay 的 UGUI Canvas 可能不进离屏 RT。
+
+工具同时支持 UGUI 和 NGUI，但同一 prefab 不会两种混着出现，不做 mixed 画板；范围内样本为纯 NGUI 或纯 UGUI。
 
 ## 关键文件
 
