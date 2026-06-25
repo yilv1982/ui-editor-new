@@ -388,6 +388,83 @@ public static partial class UIEditorNewBridgeCore
         UpdateNguiPanelDrawCalls(components);
     }
 
+    private static void ApplyNguiVisibilityLayoutAfterActiveSelf(SessionState session, GameObject root, List<Transform> changedTransforms)
+    {
+        if (session == null || root == null || changedTransforms == null || changedTransforms.Count == 0) return;
+        if (!ShouldRenderAsNgui(session, root)) return;
+
+        List<Component> layoutContainers = new List<Component>();
+        Transform rootTransform = root.transform;
+        for (int i = 0; i < changedTransforms.Count; i++)
+        {
+            Transform current = changedTransforms[i];
+            while (current != null)
+            {
+                if (current == rootTransform.parent) break;
+                CollectNguiLayoutContainers(current, layoutContainers);
+                if (current == rootTransform) break;
+                current = current.parent;
+            }
+        }
+
+        for (int i = 0; i < layoutContainers.Count; i++)
+            RepositionNguiLayoutContainer(layoutContainers[i]);
+
+        PrimeNguiFrame(root);
+    }
+
+    private static void CollectNguiLayoutContainers(Transform transform, List<Component> layoutContainers)
+    {
+        if (transform == null || layoutContainers == null || !transform.gameObject.activeInHierarchy) return;
+        Component[] components = transform.GetComponents<Component>();
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component component = components[i];
+            if (component == null || !IsNguiLayoutContainer(component)) continue;
+            if (!layoutContainers.Contains(component))
+                layoutContainers.Add(component);
+        }
+    }
+
+    private static bool IsNguiLayoutContainer(Component component)
+    {
+        if (component == null) return false;
+        Type type = component.GetType();
+        return IsTypeOrBaseName(type, "UITable") ||
+            IsTypeOrBaseName(type, "UIGrid") ||
+            IsTypeOrBaseName(type, "UIWrapContent");
+    }
+
+    private static void RepositionNguiLayoutContainer(Component component)
+    {
+        if (component == null) return;
+        Behaviour behaviour = component as Behaviour;
+        bool restoreEnabled = behaviour != null;
+        bool wasEnabled = restoreEnabled && behaviour.enabled;
+
+        Type type = component.GetType();
+        try
+        {
+            if (IsTypeOrBaseName(type, "UITable") || IsTypeOrBaseName(type, "UIGrid"))
+            {
+                InvokeReflectedMethod(component, "Start");
+                InvokeReflectedMethod(component, "Reposition");
+                return;
+            }
+
+            if (IsTypeOrBaseName(type, "UIWrapContent"))
+            {
+                InvokeReflectedMethod(component, "SortBasedOnScrollMovement");
+                InvokeReflectedMethod(component, "WrapContent");
+            }
+        }
+        finally
+        {
+            if (restoreEnabled)
+                behaviour.enabled = wasEnabled;
+        }
+    }
+
     private struct NguiTransformSnapshot
     {
         public Transform transform;

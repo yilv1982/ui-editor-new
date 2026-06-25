@@ -1223,6 +1223,7 @@ public static partial class UIEditorNewBridgeCore
                 return FailJson("PREFAB_NOT_FOUND", "Working prefab not found: " + session.workingPrefabPath);
             Dictionary<string, Transform> targets = timing.Measure("buildTargetMap", () => BuildTargetMap(root.transform, session.workingPrefabPath));
             List<PatchChange> applied = new List<PatchChange>();
+            List<Transform> activeSelfTargets = new List<Transform>();
             VisualPatchOperation[] ops = operations ?? new VisualPatchOperation[0];
             timing.Measure("applyOperations", () =>
             {
@@ -1241,9 +1242,13 @@ public static partial class UIEditorNewBridgeCore
                         throw new BridgeRequestException(error ?? "FIELD_APPLY_FAILED", "Failed to apply field: " + op.field);
                     string after = ReadFieldAsString(target, op.field);
                     applied.Add(new PatchChange { nodeId = op.nodeId, field = op.field, before = before, after = after });
+                    if (op.field == "activeSelf")
+                        activeSelfTargets.Add(target);
                 }
             });
 
+            if (activeSelfTargets.Count > 0)
+                timing.Measure("applyNguiVisibilityLayout", () => ApplyNguiVisibilityLayoutAfterActiveSelf(session, root, activeSelfTargets));
             timing.Measure("markMemoryDirty", () => MarkSessionEdited(session));
             timing.Measure("cleanupNguiRuntimeObjects", () => AfterEditAppliedForFramework(session, root));
             session.appliedChanges.AddRange(applied);
