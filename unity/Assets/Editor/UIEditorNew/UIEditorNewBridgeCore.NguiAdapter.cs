@@ -44,6 +44,8 @@ public static partial class UIEditorNewBridgeCore
             int layoutWidth = session.snapshotWidth > 0 ? session.snapshotWidth : width;
             int layoutHeight = session.snapshotHeight > 0 ? session.snapshotHeight : height;
             SnapshotViewport viewport = new SnapshotViewport { x = 0f, y = 0f, width = layoutWidth, height = layoutHeight };
+            int renderWidth = layoutWidth;
+            int renderHeight = layoutHeight;
 
             try
             {
@@ -75,19 +77,31 @@ public static partial class UIEditorNewBridgeCore
                 if (timing != null) timing.Measure("snapshot.ngui.collectBboxes", collectBboxes);
                 else collectBboxes();
 
+                Action expandViewport = () =>
+                {
+                    viewport = CalculateExpandedSnapshotViewport(bboxes, layoutWidth, layoutHeight, out renderWidth, out renderHeight);
+                    if (renderWidth == layoutWidth && renderHeight == layoutHeight && Mathf.Abs(viewport.x) < 0.001f && Mathf.Abs(viewport.y) < 0.001f) return;
+                    ApplyNguiExpandedViewport(camera, layoutWidth, layoutHeight, viewport, renderWidth, renderHeight);
+                    bboxes.Clear();
+                    nodeIdByTransform = BuildNodeIdByTransform(root.transform);
+                    CollectNguiBboxes(root.transform, root.transform, camera, renderWidth, renderHeight, request != null ? request.targetNodeIds : null, bboxes, nodeIdByTransform);
+                };
+                if (timing != null) timing.Measure("snapshot.ngui.expandViewport", expandViewport);
+                else expandViewport();
+
                 Action renderCamera = () =>
                 {
-                    rt = new RenderTexture(layoutWidth, layoutHeight, 24, RenderTextureFormat.ARGB32);
+                    rt = new RenderTexture(renderWidth, renderHeight, 24, RenderTextureFormat.ARGB32);
                     rt.name = "__UIEditorNew_NguiRT";
                     rt.Create();
                     camera.targetTexture = rt;
-                    if (camera.orthographic && layoutHeight > 0) camera.aspect = (float)layoutWidth / layoutHeight;
+                    if (camera.orthographic && renderHeight > 0) camera.aspect = (float)renderWidth / renderHeight;
                     camera.ResetProjectionMatrix();
                     camera.Render();
 
                     RenderTexture.active = rt;
-                    texture = new Texture2D(layoutWidth, layoutHeight, TextureFormat.RGBA32, false);
-                    texture.ReadPixels(new Rect(0, 0, layoutWidth, layoutHeight), 0, 0);
+                    texture = new Texture2D(renderWidth, renderHeight, TextureFormat.RGBA32, false);
+                    texture.ReadPixels(new Rect(0, 0, renderWidth, renderHeight), 0, 0);
                     texture.Apply(false);
                 };
                 if (timing != null) timing.Measure("snapshot.ngui.render", renderCamera);
@@ -122,8 +136,8 @@ public static partial class UIEditorNewBridgeCore
                 snapshot = new SnapshotRecord
                 {
                     snapshotId = snapshotId,
-                    width = layoutWidth,
-                    height = layoutHeight,
+                    width = renderWidth,
+                    height = renderHeight,
                     coordinateSpace = "top-left-pixel",
                     image = image,
                     viewport = viewport,

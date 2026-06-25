@@ -40,8 +40,13 @@ public static partial class UIEditorNewBridgeCore
         try
         {
             RectTransform canvasRect = null;
+            RectTransform layoutRootRect = null;
+            CanvasScaler scaler = null;
             GameObject instance = null;
             List<BboxRecord> bboxes = new List<BboxRecord>();
+            SnapshotViewport viewport = new SnapshotViewport { x = 0f, y = 0f, width = width, height = height };
+            int renderWidth = width;
+            int renderHeight = height;
 
             Action setupScene = () =>
             {
@@ -90,19 +95,30 @@ public static partial class UIEditorNewBridgeCore
                 canvas.planeDistance = 10f;
                 canvas.sortingOrder = 0;
 
-                CanvasScaler scaler = canvasGo.AddComponent<CanvasScaler>();
+                scaler = canvasGo.AddComponent<CanvasScaler>();
                 scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
                 scaler.referenceResolution = new Vector2(width, height);
                 scaler.matchWidthOrHeight = 0.5f;
+
+                GameObject layoutRootGo = new GameObject("__UIEditorNewSnapshot_LayoutRoot__");
+                layoutRootGo.hideFlags = HideFlags.HideAndDontSave;
+                layoutRootGo.layer = CaptureLayer;
+                layoutRootGo.transform.SetParent(canvasRect, false);
+                layoutRootRect = layoutRootGo.AddComponent<RectTransform>();
+                layoutRootRect.anchorMin = new Vector2(0.5f, 0.5f);
+                layoutRootRect.anchorMax = new Vector2(0.5f, 0.5f);
+                layoutRootRect.pivot = new Vector2(0.5f, 0.5f);
+                layoutRootRect.sizeDelta = new Vector2(width, height);
+                layoutRootRect.anchoredPosition = Vector2.zero;
             };
             if (timing != null) timing.Measure("snapshot.setupScene", setupScene);
             else setupScene();
 
             Action instantiatePrefab = () =>
             {
-                instance = PrefabUtility.InstantiatePrefab(prefab, canvasRect) as GameObject;
+                instance = PrefabUtility.InstantiatePrefab(prefab, layoutRootRect) as GameObject;
                 if (instance == null)
-                    instance = UnityEngine.Object.Instantiate(prefab, canvasRect);
+                    instance = UnityEngine.Object.Instantiate(prefab, layoutRootRect);
                 if (instance == null)
                     throw new InvalidOperationException("Failed to instantiate prefab: " + session.workingPrefabPath);
                 instance.name = prefab.name;
@@ -137,9 +153,43 @@ public static partial class UIEditorNewBridgeCore
             if (timing != null) timing.Measure("snapshot.collectBboxes", collectBboxes);
             else collectBboxes();
 
+            Action expandViewport = () =>
+            {
+                viewport = CalculateExpandedSnapshotViewport(bboxes, width, height, out renderWidth, out renderHeight);
+                if (renderWidth == width && renderHeight == height && Mathf.Abs(viewport.x) < 0.001f && Mathf.Abs(viewport.y) < 0.001f) return;
+
+                canvasRect.sizeDelta = new Vector2(renderWidth, renderHeight);
+                if (scaler != null) scaler.referenceResolution = new Vector2(renderWidth, renderHeight);
+                if (camera != null)
+                {
+                    if (session.snapshotPixelsPerWorld > 0f)
+                        camera.orthographicSize = renderHeight / (2f * session.snapshotPixelsPerWorld);
+                    else
+                        camera.orthographicSize = renderHeight / 2f;
+                }
+                if (layoutRootRect != null)
+                {
+                    layoutRootRect.sizeDelta = new Vector2(width, height);
+                    layoutRootRect.anchoredPosition = new Vector2(
+                        viewport.x + width * 0.5f - renderWidth * 0.5f,
+                        renderHeight * 0.5f - (viewport.y + height * 0.5f)
+                    );
+                }
+
+                Canvas.ForceUpdateCanvases();
+                LayoutRebuilder.ForceRebuildLayoutImmediate(canvasRect);
+                Canvas.ForceUpdateCanvases();
+
+                bboxes.Clear();
+                Dictionary<Transform, string> nodeIdByTransform = BuildNodeIdByTransform(instance.transform);
+                CollectUguiBboxes(canvasRect, instance.transform, instance.transform, renderWidth, renderHeight, request != null ? request.targetNodeIds : null, bboxes, nodeIdByTransform);
+            };
+            if (timing != null) timing.Measure("snapshot.expandViewport", expandViewport);
+            else expandViewport();
+
             Action renderCamera = () =>
             {
-                texture = RenderUguiCameraToTexture(camera, width, height, () =>
+                texture = RenderUguiCameraToTexture(camera, renderWidth, renderHeight, () =>
                 {
                     camera.Render();
                     Canvas.ForceUpdateCanvases();
@@ -187,11 +237,11 @@ public static partial class UIEditorNewBridgeCore
             snapshot = new SnapshotRecord
             {
                 snapshotId = snapshotId,
-                width = width,
-                height = height,
+                width = renderWidth,
+                height = renderHeight,
                 coordinateSpace = "top-left-pixel",
                 image = image,
-                viewport = new SnapshotViewport { x = 0f, y = 0f, width = width, height = height },
+                viewport = viewport,
                 bboxes = bboxes.ToArray()
             };
             return true;

@@ -13,9 +13,10 @@ public static partial class UIEditorNewBridgeCore
     private const string PrefabRoot = "Assets/HotRes2/UIs/Prefabs";
     private const string TempPrefabRoot = "Assets/Temp/UIEditorNew";
     private const string SnapshotFolder = "Temp/UIEditorNew/Snapshots";
-    private const string BridgeVersion = "UIEditor_new-bridge-mvp-81-ngui-preserve-static-widget-size";
+    private const string BridgeVersion = "UIEditor_new-bridge-mvp-82-expanded-artboard-viewport";
     private const int CaptureLayer = 31;
     private const int SnapshotJpegQuality = 80;
+    private const int SnapshotViewportPadding = 0;
     private const double MemoryAutosaveIdleSeconds = 15.0;
     private const string FrameworkUGUI = "ugui";
     private const string FrameworkNGUI = "ngui";
@@ -164,6 +165,53 @@ public static partial class UIEditorNewBridgeCore
     public static string ResolveSnapshotPath(string fileName)
     {
         return Path.Combine(ProjectRoot(), SnapshotFolder, Path.GetFileName(fileName));
+    }
+
+    private static SnapshotViewport CalculateExpandedSnapshotViewport(List<BboxRecord> bboxes, int baseWidth, int baseHeight, out int imageWidth, out int imageHeight)
+    {
+        float minX = 0f;
+        float minY = 0f;
+        float maxX = Mathf.Max(1, baseWidth);
+        float maxY = Mathf.Max(1, baseHeight);
+        bool hasContributing = false;
+        if (bboxes != null)
+        {
+            for (int i = 0; i < bboxes.Count; i++)
+            {
+                BboxRecord box = bboxes[i];
+                if (box == null || !box.activeInHierarchy || box.width <= 1f || box.height <= 1f) continue;
+                if (box.contributesToBounds)
+                {
+                    hasContributing = true;
+                    break;
+                }
+            }
+
+            for (int i = 0; i < bboxes.Count; i++)
+            {
+                BboxRecord box = bboxes[i];
+                if (box == null || !box.activeInHierarchy || box.width <= 1f || box.height <= 1f) continue;
+                if (hasContributing && !box.contributesToBounds) continue;
+                minX = Mathf.Min(minX, box.x);
+                minY = Mathf.Min(minY, box.y);
+                maxX = Mathf.Max(maxX, box.x + box.width);
+                maxY = Mathf.Max(maxY, box.y + box.height);
+            }
+        }
+
+        float left = Mathf.Floor(minX - SnapshotViewportPadding);
+        float top = Mathf.Floor(minY - SnapshotViewportPadding);
+        float right = Mathf.Ceil(maxX + SnapshotViewportPadding);
+        float bottom = Mathf.Ceil(maxY + SnapshotViewportPadding);
+        imageWidth = Mathf.Max(1, Mathf.RoundToInt(right - left));
+        imageHeight = Mathf.Max(1, Mathf.RoundToInt(bottom - top));
+        return new SnapshotViewport
+        {
+            x = -left,
+            y = -top,
+            width = baseWidth,
+            height = baseHeight
+        };
     }
 
     private static string CleanupRuntimeState(string json)

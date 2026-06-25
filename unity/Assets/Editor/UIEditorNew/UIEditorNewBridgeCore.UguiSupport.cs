@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.UI;
 using System.Collections.Generic;
 
 public static partial class UIEditorNewBridgeCore
@@ -19,7 +20,8 @@ public static partial class UIEditorNewBridgeCore
                 width = rect.width,
                 height = rect.height,
                 activeInHierarchy = current.gameObject.activeInHierarchy,
-                space = "snapshot-pixel"
+                space = "snapshot-pixel",
+                contributesToBounds = IsUguiDrawableBoundsSource(current)
             });
         }
         foreach (Transform child in current)
@@ -32,6 +34,15 @@ public static partial class UIEditorNewBridgeCore
         for (int i = 0; i < targetNodeIds.Length; i++)
             if (targetNodeIds[i] == nodeId) return true;
         return false;
+    }
+
+    private static bool IsUguiDrawableBoundsSource(Transform transform)
+    {
+        if (transform == null) return false;
+        Graphic graphic = transform.GetComponent<Graphic>();
+        if (graphic == null || !graphic.enabled) return false;
+        if (graphic.canvasRenderer != null && graphic.canvasRenderer.GetAlpha() <= 0.001f) return false;
+        return graphic.color.a > 0.001f;
     }
 
     private static CaptureRect CalculateUguiCaptureRect(RectTransform canvasRect, Transform target, int width, int height)

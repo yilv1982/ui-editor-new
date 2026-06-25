@@ -221,6 +221,30 @@ public static partial class UIEditorNewBridgeCore
         return new Vector3(vx * width, vy * height, local.z);
     }
 
+    private static void ApplyNguiExpandedViewport(Camera camera, int baseWidth, int baseHeight, SnapshotViewport viewport, int imageWidth, int imageHeight)
+    {
+        if (camera == null || baseWidth <= 0 || baseHeight <= 0 || imageWidth <= 0 || imageHeight <= 0) return;
+        if (!camera.orthographic)
+        {
+            camera.aspect = (float)imageWidth / imageHeight;
+            camera.ResetProjectionMatrix();
+            return;
+        }
+
+        float worldUnitsPerPixel = (camera.orthographicSize * 2f) / baseHeight;
+        float left = -viewport.x;
+        float top = -viewport.y;
+        float centerX = left + imageWidth * 0.5f;
+        float centerY = top + imageHeight * 0.5f;
+        float localX = (centerX - baseWidth * 0.5f) * worldUnitsPerPixel;
+        float localY = (baseHeight * 0.5f - centerY) * worldUnitsPerPixel;
+
+        camera.transform.position += camera.transform.right * localX + camera.transform.up * localY;
+        camera.orthographicSize = imageHeight * worldUnitsPerPixel * 0.5f;
+        camera.aspect = (float)imageWidth / imageHeight;
+        camera.ResetProjectionMatrix();
+    }
+
     private static void CollectNguiWorldCorners(Transform target, Transform current, List<Vector3> corners)
     {
         Component[] components = current.GetComponents<Component>();
