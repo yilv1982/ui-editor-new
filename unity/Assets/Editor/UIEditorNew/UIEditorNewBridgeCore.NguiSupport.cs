@@ -47,8 +47,8 @@ public static partial class UIEditorNewBridgeCore
     private static bool ShouldRenderAsNgui(SessionState session, GameObject prefab)
     {
         if (session == null) return false;
-        if (string.IsNullOrEmpty(session.framework) || session.framework == FrameworkUnknown)
-            session.framework = DetectFramework(prefab);
+        if ((string.IsNullOrEmpty(session.framework) || session.framework == FrameworkUnknown) && !IsBlankBridgeArtboard(session, prefab))
+            session.framework = DetectSessionFramework(prefab);
         if (session.framework == FrameworkNGUI) return true;
         return session.framework == FrameworkMixed && HasNguiRootOrPanel(prefab);
     }

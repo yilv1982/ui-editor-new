@@ -46,6 +46,12 @@ function isPrefabDragType(type: string): boolean {
   return type === 'application/uieditor-prefab' || type === 'application/component';
 }
 
+function artboardFrameworkLabel(framework: string | undefined): string {
+  if (framework === 'ugui') return 'UGUI';
+  if (framework === 'ngui') return 'NGUI';
+  return '';
+}
+
 function buildReadableNodePath(nodeId: string): string {
   const state = useEditorStore.getState();
   // nodeId 是不透明主键（结构索引 "si:..."），不从中解析路径；
@@ -1075,7 +1081,12 @@ function ArtboardListBar() {
                   onClick={(e) => e.stopPropagation()}
                 />
               ) : (
-                <span className="truncate flex-1">{a.name}</span>
+                <span className="truncate flex-1">
+                  {a.name}
+                  {artboardFrameworkLabel(a.bridgeFramework) ? (
+                    <span className="ml-1 text-[10px] text-[#89b4fa]">({artboardFrameworkLabel(a.bridgeFramework)})</span>
+                  ) : null}
+                </span>
               )}
               <span className="text-[10px] text-[#6c7086]">{Object.keys(a.nodes).length}</span>
             </div>

@@ -40,6 +40,11 @@ function defaultTargetFor(name: string): string {
   return `${DEFAULT_SAVE_ROOT}/${name || 'NewUI'}.prefab`;
 }
 
+function normalizePanelFramework(value: string | null | undefined): string | undefined {
+  if (value === 'ugui' || value === 'ngui') return value;
+  return undefined;
+}
+
 function summaryString(node: NodeRecord, componentType: string, key: string): string {
   const value = node.components.find((component) => component.type === componentType)?.summary?.[key];
   return typeof value === 'string' ? value : '';
@@ -468,6 +473,7 @@ async function artboardFromBridgeState(
     bridgeSessionId: response.session.sessionId,
     bridgeWorkingPrefabPath: response.session.workingPrefabPath,
     bridgeTargetPrefabPath: defaultTargetFor(name),
+    bridgeFramework: normalizePanelFramework(response.session.framework),
     bridgeRevision: response.revision,
     bridgeRootNodeId: response.rootNodeId,
     bridgeSnapshot: snapshot,
@@ -505,6 +511,7 @@ async function artboardPatchFromBridgeState(
       bridgeSessionId: response.session.sessionId,
       bridgeWorkingPrefabPath: response.session.workingPrefabPath,
       bridgeTargetPrefabPath: sourcePrefabPath || defaultTargetFor(name),
+      bridgeFramework: normalizePanelFramework(response.session.framework),
       bridgeRevision: response.revision,
       bridgeRootNodeId: response.rootNodeId,
       bridgeSnapshot: snapshot,
@@ -553,6 +560,7 @@ export async function applyBridgeStateToActiveArtboard(response: ArtboardStateRe
     bridgeSessionId: response.session.sessionId,
     bridgeWorkingPrefabPath: response.session.workingPrefabPath,
     bridgeTargetPrefabPath: response.session.sourcePrefabPath || getActiveArtboard()?.bridgeTargetPrefabPath || defaultTargetFor(fallbackName),
+    bridgeFramework: normalizePanelFramework(response.session.framework),
     bridgeRevision: response.revision,
     bridgeRootNodeId: response.rootNodeId,
     bridgeSnapshot: snapshot,

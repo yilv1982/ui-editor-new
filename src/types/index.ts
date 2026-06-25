@@ -283,6 +283,7 @@ export interface Artboard {
   bridgeSessionId?: string;
   bridgeWorkingPrefabPath?: string;
   bridgeTargetPrefabPath?: string;
+  bridgeFramework?: string;
   bridgeRevision?: string;
   bridgeRootNodeId?: string;
   bridgeSnapshot?: any;

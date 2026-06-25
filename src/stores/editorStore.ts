@@ -108,6 +108,7 @@ type BridgeWorkspaceSnapshot = {
       sourcePrefabPath?: string | null;
       bridgeWorkingPrefabPath?: string | null;
       bridgeTargetPrefabPath?: string | null;
+      bridgeFramework?: string | null;
       bridgeDirty?: boolean;
       sidebar?: Artboard['sidebar'];
       sidebarEnabled?: boolean;
@@ -154,6 +155,7 @@ function readBridgeWorkspaceSnapshot(defaultWidth: number, defaultHeight: number
           sourcePrefabPath: sourcePath,
           bridgeWorkingPrefabPath: workingPath,
           bridgeTargetPrefabPath: typeof artboardLike.bridgeTargetPrefabPath === 'string' ? artboardLike.bridgeTargetPrefabPath : undefined,
+          bridgeFramework: artboardLike.bridgeFramework === 'ugui' || artboardLike.bridgeFramework === 'ngui' ? artboardLike.bridgeFramework : undefined,
           bridgeDirty: !!artboardLike.bridgeDirty,
           bridgeStatus: workingPath ? '正在恢复画板...' : undefined,
           sidebar: artboardLike.sidebar,
@@ -218,6 +220,7 @@ function writeBridgeWorkspaceSnapshot(state: EditorState) {
           sourcePrefabPath: artboard.sourcePrefabPath,
           bridgeWorkingPrefabPath: artboard.bridgeWorkingPrefabPath,
           bridgeTargetPrefabPath: artboard.bridgeTargetPrefabPath,
+          bridgeFramework: artboard.bridgeFramework,
           bridgeDirty: !!artboard.bridgeDirty,
           sidebar: artboard.sidebar,
           sidebarEnabled: artboard.sidebarEnabled,

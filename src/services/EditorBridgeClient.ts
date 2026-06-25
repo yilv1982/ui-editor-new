@@ -44,7 +44,7 @@ export interface SessionInfo {
   sourcePrefabPath: string;
   workingPrefabPath: string;
   mode: 'readonly' | 'temp-copy' | 'source' | string;
-  framework?: 'ugui' | 'ngui' | 'mixed' | 'unknown' | string;
+  framework?: 'ugui' | 'ngui' | 'unknown' | string;
   revision: string;
 }
 

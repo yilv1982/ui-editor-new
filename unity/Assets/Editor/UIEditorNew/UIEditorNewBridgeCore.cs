@@ -208,6 +208,9 @@ public static partial class UIEditorNewBridgeCore
         }
 
         SessionState session = CreateSession(null, workingPrefabPath, "temp-copy", ReadAssetText(workingPrefabPath));
+        // Blank artboards are not UGUI/NGUI yet. The first inserted prefab locks
+        // the session framework; subsequent inserts must match that route.
+        session.framework = FrameworkUnknown;
         BridgeTiming timing = new BridgeTiming(request != null && request.profile);
         return BuildArtboardResponseJson(session, null, request == null || !request.skipSnapshot, timing);
     }
@@ -547,9 +550,12 @@ public static partial class UIEditorNewBridgeCore
         if (insertPrefab == null)
             return FailJson("PREFAB_NOT_FOUND", "Prefab not found: " + insertPath);
 
+        string insertFramework = DetectSessionFramework(insertPrefab);
         string selectedNodeId = null;
         return MutatePrefabAndReturnState(session, null, root =>
         {
+            EnsurePrefabInsertFrameworkCompatible(session, root, insertFramework, insertPath);
+
             Dictionary<string, Transform> targets = BuildTargetMap(root.transform, session.workingPrefabPath);
             Transform parent = root.transform;
             if (!string.IsNullOrEmpty(request.parentId) && !targets.TryGetValue(request.parentId, out parent))
@@ -2833,14 +2839,35 @@ public static partial class UIEditorNewBridgeCore
     private static string DetectPrefabFramework(string prefabPath)
     {
         GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
-        return DetectFramework(prefab);
+        return DetectSessionFramework(prefab);
+    }
+
+    private static string DetectSessionFramework(GameObject root)
+    {
+        bool hasUgui;
+        bool hasNgui;
+        DetectFrameworkFlags(root, out hasUgui, out hasNgui);
+        if (hasNgui) return FrameworkNGUI;
+        if (hasUgui) return FrameworkUGUI;
+        return FrameworkUnknown;
     }
 
     private static string DetectFramework(GameObject root)
     {
-        if (root == null) return FrameworkUnknown;
-        bool hasUgui = false;
-        bool hasNgui = false;
+        bool hasUgui;
+        bool hasNgui;
+        DetectFrameworkFlags(root, out hasUgui, out hasNgui);
+        if (hasUgui && hasNgui) return FrameworkMixed;
+        if (hasNgui) return FrameworkNGUI;
+        if (hasUgui) return FrameworkUGUI;
+        return FrameworkUnknown;
+    }
+
+    private static void DetectFrameworkFlags(GameObject root, out bool hasUgui, out bool hasNgui)
+    {
+        hasUgui = false;
+        hasNgui = false;
+        if (root == null) return;
         Component[] components = root.GetComponentsInChildren<Component>(true);
         for (int i = 0; i < components.Length; i++)
         {
@@ -2849,10 +2876,56 @@ public static partial class UIEditorNewBridgeCore
             if (IsUguiComponent(component)) hasUgui = true;
             if (IsNguiComponent(component)) hasNgui = true;
         }
-        if (hasUgui && hasNgui) return FrameworkMixed;
-        if (hasNgui) return FrameworkNGUI;
-        if (hasUgui) return FrameworkUGUI;
+    }
+
+    private static string NormalizePanelFramework(string framework)
+    {
+        if (framework == FrameworkNGUI || framework == FrameworkMixed) return FrameworkNGUI;
+        if (framework == FrameworkUGUI) return FrameworkUGUI;
         return FrameworkUnknown;
+    }
+
+    private static bool IsKnownPanelFramework(string framework)
+    {
+        return framework == FrameworkUGUI || framework == FrameworkNGUI;
+    }
+
+    private static bool IsBlankBridgeArtboard(SessionState session, GameObject root)
+    {
+        if (session == null || root == null) return false;
+        if (!string.IsNullOrEmpty(session.sourcePrefabPath)) return false;
+        if (string.IsNullOrEmpty(session.workingPrefabPath) ||
+            session.workingPrefabPath.IndexOf("__uieditor_new_blank_", StringComparison.OrdinalIgnoreCase) < 0)
+            return false;
+        return root.transform.childCount == 0;
+    }
+
+    private static void EnsurePrefabInsertFrameworkCompatible(SessionState session, GameObject root, string insertFramework, string insertPath)
+    {
+        string incoming = NormalizePanelFramework(insertFramework);
+        if (!IsKnownPanelFramework(incoming)) return;
+
+        string current = IsBlankBridgeArtboard(session, root)
+            ? FrameworkUnknown
+            : NormalizePanelFramework(session != null ? session.framework : null);
+        if (!IsKnownPanelFramework(current))
+        {
+            if (session != null) session.framework = incoming;
+            return;
+        }
+
+        if (current == incoming) return;
+
+        throw new BridgeRequestException(
+            "FRAMEWORK_MISMATCH",
+            "当前画板是 " + FrameworkDisplayName(current) + "，不能插入 " + FrameworkDisplayName(incoming) + " Prefab: " + insertPath);
+    }
+
+    private static string FrameworkDisplayName(string framework)
+    {
+        if (framework == FrameworkNGUI) return "NGUI";
+        if (framework == FrameworkUGUI) return "UGUI";
+        return "Unknown";
     }
 
     private static string DetectNodeFramework(GameObject go)
@@ -3250,7 +3323,7 @@ public static partial class UIEditorNewBridgeCore
             sourcePrefabPath = session.sourcePrefabPath,
             workingPrefabPath = session.workingPrefabPath,
             mode = session.mode,
-            framework = string.IsNullOrEmpty(session.framework) ? FrameworkUnknown : session.framework,
+            framework = NormalizePanelFramework(session.framework),
             revision = RevisionText(session)
         };
     }
