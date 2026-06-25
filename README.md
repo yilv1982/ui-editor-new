@@ -511,7 +511,8 @@ npm run smoke:thumbnail-render
 ## 关键文档
 
 - `docs/README.md`：文档索引。
-- `docs/handover-deploy.md`：交接部署集成文档（工程定位、部署步骤、工程外改动、已知问题、接手检查清单）。
+- `交接部署集成文档.md`：交接部署集成文档（工程定位、部署步骤、工程外改动、已知问题、接手检查清单）。
+- `后续工作建议.md`：后续工作通俗版整理（剩余 TODO 的为什么做、先做什么、完成标准）。
 - `docs/unity-editor-bridge-api.md`：Bridge API、数据结构、端点和 protected diff 约定。
 - `docs/component-library-io-contract.md`：UI 公共组件库与编辑器之间的输入输出契约。
 - `docs/client-bridge-isolation.md`：Bridge 命名空间、端口、session、临时目录和保存路径隔离约束。
