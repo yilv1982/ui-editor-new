@@ -1103,7 +1103,18 @@ public static partial class UIEditorNewBridgeCore
         ClosePrefabRequest request = JsonUtility.FromJson<ClosePrefabRequest>(json);
         SessionState session;
         if (!TryGetSession(request != null ? request.sessionId : null, out session))
-            return FailJson("SESSION_NOT_FOUND", "sessionId not found");
+        {
+            bool canDeleteTempByPath = request != null &&
+                request.deleteTempObjects &&
+                IsTempWorkingPrefabPath(request.workingPrefabPath);
+            if (!canDeleteTempByPath)
+                return FailJson("SESSION_NOT_FOUND", "sessionId not found");
+
+            string workingPrefabPath = NormalizeAssetPath(request.workingPrefabPath);
+            AssetDatabase.DeleteAsset(workingPrefabPath);
+            AssetDatabase.Refresh();
+            return JsonUtility.ToJson(new BaseResponse { ok = true });
+        }
 
         bool deleteTemp = request != null && request.deleteTempObjects;
         if (!deleteTemp)
@@ -1117,6 +1128,14 @@ public static partial class UIEditorNewBridgeCore
         }
         Sessions.Remove(session.sessionId);
         return JsonUtility.ToJson(new BaseResponse { ok = true });
+    }
+
+    private static bool IsTempWorkingPrefabPath(string workingPrefabPath)
+    {
+        if (string.IsNullOrEmpty(workingPrefabPath)) return false;
+        string normalized = NormalizeAssetPath(workingPrefabPath);
+        return normalized.StartsWith(TempPrefabRoot + "/", StringComparison.Ordinal) &&
+            normalized.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool RenderSnapshotInternal(SessionState session, RenderSnapshotRequest request, out SnapshotRecord snapshot, out string errorCode, out string errorMessage, BridgeTiming timing = null)
@@ -2878,6 +2897,18 @@ public static partial class UIEditorNewBridgeCore
         }
     }
 
+    private static void FlushAllDirtySessionsToDisk()
+    {
+        foreach (SessionState session in Sessions.Values)
+        {
+            try { FlushSessionToDisk(session); }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[UIEditorNewBridge] Failed to flush session before cleanup: " + ex.Message);
+            }
+        }
+    }
+
     private static string NormalizePanelFramework(string framework)
     {
         if (framework == FrameworkNGUI || framework == FrameworkMixed) return FrameworkNGUI;
@@ -3935,7 +3966,7 @@ public static partial class UIEditorNewBridgeCore
     [Serializable] private class SavePrefabResponse { public bool ok; public string savedPath; public string sourcePrefabPath; public string revision; }
     [Serializable] private class SaveArtboardRequest { public string sessionId; public string targetPrefabPath; public string note; }
     [Serializable] private class SaveArtboardResponse { public bool ok; public string savedPath; public string sourcePrefabPath; public string workingPrefabPath; public string revision; public ProtectedDiffResult protectedDiff; public ErrorInfo error; }
-    [Serializable] private class ClosePrefabRequest { public string sessionId; public bool deleteTempObjects; }
+    [Serializable] private class ClosePrefabRequest { public string sessionId; public string workingPrefabPath; public bool deleteTempObjects; }
     private class CaptureRect { public float x; public float y; public float width; public float height; }
 
     private class BridgeRequestException : Exception

@@ -411,9 +411,10 @@ export class EditorBridgeClient {
     });
   }
 
-  async closePrefab(sessionId: string, deleteTempObjects: boolean): Promise<BridgeBaseResponse> {
+  async closePrefab(sessionId: string | null | undefined, deleteTempObjects: boolean, workingPrefabPath?: string | null): Promise<BridgeBaseResponse> {
     return this.post<BridgeBaseResponse>('/close-prefab', {
-      sessionId,
+      sessionId: sessionId ?? '',
+      workingPrefabPath: workingPrefabPath ?? '',
       deleteTempObjects,
     });
   }

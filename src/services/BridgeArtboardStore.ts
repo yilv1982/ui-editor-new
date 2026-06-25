@@ -5,6 +5,7 @@ import { defaultStyle } from '../types';
 import editorBridgeClient, {
   type ArtboardStateResponse,
   type BboxRecord,
+  EditorBridgeRequestError,
   type NodeRecord,
   type SessionInfo,
   type SnapshotRecord,
@@ -572,15 +573,105 @@ export async function applyBridgeStateToActiveArtboard(response: ArtboardStateRe
   }, selectedIdsOverride ?? (selectedNodeId ? [selectedNodeId] : []));
 }
 
-export async function refreshActiveBridgeSnapshot(width?: number, height?: number) {
-  const artboard = getActiveArtboard();
-  if (!artboard?.bridgeSessionId) return;
-  const state = useEditorStore.getState();
-  const snapshotResponse = await editorBridgeClient.renderSnapshot(artboard.bridgeSessionId, undefined, {
-    width: width ?? state.previewWidth,
-    height: height ?? state.previewHeight,
-    profile: true,
+function isSessionNotFoundError(err: unknown): boolean {
+  return err instanceof EditorBridgeRequestError && err.code === 'SESSION_NOT_FOUND';
+}
+
+function isPrefabNotFoundError(err: unknown): boolean {
+  return err instanceof EditorBridgeRequestError && err.code === 'PREFAB_NOT_FOUND';
+}
+
+async function rematerializeActiveArtboardAfterMissingWorkingPrefab(
+  artboard: Artboard,
+  status = '临时 Prefab 已不存在，正在重建画板...',
+): Promise<Artboard> {
+  debugLog('bridge-session', 'working-prefab-missing', {
+    artboardId: artboard.id,
+    artboardName: artboard.name,
+    workingPrefabPath: artboard.bridgeWorkingPrefabPath,
+    sourcePrefabPath: artboard.sourcePrefabPath,
   });
+  updateActiveArtboard({
+    bridgeSessionId: undefined,
+    bridgeWorkingPrefabPath: undefined,
+    bridgeRevision: undefined,
+    bridgeRootNodeId: undefined,
+    bridgeSnapshot: null,
+    bridgeSnapshotUrl: null,
+    bridgeStatus: status,
+  }, []);
+  if (artboard.sourcePrefabPath) {
+    await openPrefabInActiveArtboard(artboard.sourcePrefabPath);
+  } else {
+    await createBlankInActiveArtboard(artboard.name || 'NewUI');
+  }
+  const next = getActiveArtboard();
+  if (!next?.bridgeSessionId) throw new Error('Bridge artboard session was not created');
+  return next;
+}
+
+async function recoverActiveBridgeSession(status = '已恢复 Unity session'): Promise<Artboard> {
+  const current = getActiveArtboard();
+  if (!current?.bridgeWorkingPrefabPath) {
+    throw new Error('Unity session 已失效，且当前画板没有 working Prefab 路径，无法恢复');
+  }
+  debugLog('bridge-session', 'recover-request', {
+    artboardId: current.id,
+    artboardName: current.name,
+    oldSessionId: current.bridgeSessionId,
+    workingPrefabPath: current.bridgeWorkingPrefabPath,
+    sourcePrefabPath: current.sourcePrefabPath,
+  });
+  let response: ArtboardStateResponse;
+  try {
+    response = await editorBridgeClient.resumeSession({
+      workingPrefabPath: current.bridgeWorkingPrefabPath,
+      sourcePrefabPath: current.sourcePrefabPath,
+      selectedNodeId: useEditorStore.getState().selectedIds[0],
+    });
+  } catch (err) {
+    if (isPrefabNotFoundError(err)) {
+      return rematerializeActiveArtboardAfterMissingWorkingPrefab(current);
+    }
+    throw err;
+  }
+  await applyBridgeStateToActiveArtboard(response, status);
+  const recovered = getActiveArtboard();
+  if (!recovered?.bridgeSessionId) {
+    throw new Error('Unity session 恢复失败');
+  }
+  debugLog('bridge-session', 'recover-ok', {
+    artboardId: recovered.id,
+    newSessionId: recovered.bridgeSessionId,
+    workingPrefabPath: recovered.bridgeWorkingPrefabPath,
+  });
+  return recovered;
+}
+
+async function runWithRecoveredActiveSession<T>(
+  operation: (artboard: Artboard) => Promise<T>,
+  status = '已恢复 Unity session',
+): Promise<T> {
+  const artboard = await ensureActiveBridgeArtboard();
+  try {
+    return await operation(artboard);
+  } catch (err) {
+    if (!isSessionNotFoundError(err)) throw err;
+    const recovered = await recoverActiveBridgeSession(status);
+    return operation(recovered);
+  }
+}
+
+export async function refreshActiveBridgeSnapshot(width?: number, height?: number) {
+  const snapshotResponse = await runWithRecoveredActiveSession((artboard) => {
+    if (!artboard.bridgeSessionId) throw new Error('Bridge session was not created');
+    const state = useEditorStore.getState();
+    return editorBridgeClient.renderSnapshot(artboard.bridgeSessionId, undefined, {
+      width: width ?? state.previewWidth,
+      height: height ?? state.previewHeight,
+      profile: true,
+    });
+  }, '已恢复画板截图 session');
   const snapshot = normalizeSnapshot(snapshotResponse.snapshot);
   const snapshotUrl = snapshot ? await editorBridgeClient.snapshotUrl(snapshot) : null;
   updateActiveArtboard({
@@ -595,12 +686,17 @@ export async function ensureActiveBridgeArtboard(): Promise<Artboard> {
   const current = getActiveArtboard();
   if (current?.bridgeSessionId) return current;
   if (current?.bridgeWorkingPrefabPath) {
-    const response = await editorBridgeClient.resumeSession({
-      workingPrefabPath: current.bridgeWorkingPrefabPath,
-      sourcePrefabPath: current.sourcePrefabPath,
-      selectedNodeId: useEditorStore.getState().selectedIds[0],
-    });
-    await applyBridgeStateToActiveArtboard(response, `已恢复画板: ${current.name}`);
+    try {
+      const response = await editorBridgeClient.resumeSession({
+        workingPrefabPath: current.bridgeWorkingPrefabPath,
+        sourcePrefabPath: current.sourcePrefabPath,
+        selectedNodeId: useEditorStore.getState().selectedIds[0],
+      });
+      await applyBridgeStateToActiveArtboard(response, `已恢复画板: ${current.name}`);
+    } catch (err) {
+      if (!isPrefabNotFoundError(err)) throw err;
+      return rematerializeActiveArtboardAfterMissingWorkingPrefab(current);
+    }
   } else if (current?.sourcePrefabPath) {
     await openPrefabInActiveArtboard(current.sourcePrefabPath);
   } else {
@@ -680,25 +776,25 @@ export async function insertPrefabIntoArtboard(artboardId: string, prefabPath: s
 }
 
 export async function insertPrefabIntoNode(parentId: string, prefabPath: string, options: { index?: number } = {}) {
-  const artboard = await ensureActiveBridgeArtboard();
   const startedAt = performance.now();
-  debugLog('bridge-insert', 'request-node-parent', {
-    sessionId: artboard.bridgeSessionId,
-    artboardId: artboard.id,
-    artboardName: artboard.name,
-    prefabPath,
-    parentId,
-    index: options.index,
-    beforeNodeCount: Object.keys(artboard.nodes ?? {}).length,
-  });
-  const response = await editorBridgeClient.insertPrefab(artboard.bridgeSessionId!, prefabPath, {
-    parentId,
-    x: 0,
-    y: 0,
-    index: options.index,
-  }, { skipSnapshot: false });
+  const response = await runWithRecoveredActiveSession((artboard) => {
+    debugLog('bridge-insert', 'request-node-parent', {
+      sessionId: artboard.bridgeSessionId,
+      artboardId: artboard.id,
+      artboardName: artboard.name,
+      prefabPath,
+      parentId,
+      index: options.index,
+      beforeNodeCount: Object.keys(artboard.nodes ?? {}).length,
+    });
+    return editorBridgeClient.insertPrefab(artboard.bridgeSessionId!, prefabPath, {
+      parentId,
+      x: 0,
+      y: 0,
+      index: options.index,
+    }, { skipSnapshot: false });
+  }, '已恢复插入 session');
   debugLog('bridge-insert', 'response-node-parent', {
-    sessionId: artboard.bridgeSessionId,
     prefabPath,
     parentId,
     elapsedMs: Math.round(performance.now() - startedAt),
@@ -836,8 +932,9 @@ export async function duplicateBridgePage(sourcePageId?: string) {
 
 export async function moveNodeOnBridge(nodeId: string, x: number, y: number, skipSnapshot = false) {
   if (isNodeLocked(nodeId)) return;
-  const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.moveNode(artboard.bridgeSessionId!, nodeId, x, y, { skipSnapshot });
+  const response = await runWithRecoveredActiveSession((artboard) =>
+    editorBridgeClient.moveNode(artboard.bridgeSessionId!, nodeId, x, y, { skipSnapshot }),
+  '已恢复移动 session');
   if (!skipSnapshot) await applyBridgeStateToActiveArtboard(response, '节点已移动');
 }
 
@@ -855,47 +952,52 @@ export async function moveNodesOnBridge(
     deduped.push(move);
   }
   if (deduped.length === 0) return;
-  const artboard = await ensureActiveBridgeArtboard();
   let response: ArtboardStateResponse | null = null;
-  for (let index = 0; index < deduped.length; index += 1) {
-    const move = deduped[index];
-    response = await editorBridgeClient.moveNode(artboard.bridgeSessionId!, move.nodeId, move.x, move.y, {
-      skipSnapshot: index < deduped.length - 1,
-    });
-  }
+  response = await runWithRecoveredActiveSession(async (artboard) => {
+    let current: ArtboardStateResponse | null = null;
+    for (let index = 0; index < deduped.length; index += 1) {
+      const move = deduped[index];
+      current = await editorBridgeClient.moveNode(artboard.bridgeSessionId!, move.nodeId, move.x, move.y, {
+        skipSnapshot: index < deduped.length - 1,
+      });
+    }
+    return current;
+  }, '已恢复移动 session');
   if (response) await applyBridgeStateToActiveArtboard(response, status, selectedIdsOverride);
 }
 
 export async function resizeNodeOnBridge(nodeId: string, width: number, height: number, skipSnapshot = false) {
   if (isNodeLocked(nodeId)) return;
-  const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.resizeNode(artboard.bridgeSessionId!, nodeId, width, height, { skipSnapshot });
+  const response = await runWithRecoveredActiveSession((artboard) =>
+    editorBridgeClient.resizeNode(artboard.bridgeSessionId!, nodeId, width, height, { skipSnapshot }),
+  '已恢复缩放 session');
   if (!skipSnapshot) await applyBridgeStateToActiveArtboard(response, '节点已缩放');
 }
 
 async function applyVisualFieldsOnBridge(operations: VisualPatchOperation[], status = '属性已同步') {
   if (operations.length === 0) return;
-  const artboard = await ensureActiveBridgeArtboard();
   const selectedBefore = useEditorStore.getState().selectedIds;
   const operationNodeIds = [...new Set(operations.map((item) => item.nodeId).filter(Boolean))];
-  debugLog('bridge-op', 'apply-visual-fields', {
-    sessionId: artboard.bridgeSessionId,
-    selectedBefore,
-    operationNodeIds,
-    fields: operations.map((item) => item.field),
-  });
-  await editorBridgeClient.applyVisualPatch(artboard.bridgeSessionId!, {
-    patchId: globalThis.crypto?.randomUUID?.() ?? `patch-${Date.now()}`,
-    baseRevision: artboard.bridgeRevision ?? '',
-    operations,
-  });
-  const response = await stateFromSession({
-    sessionId: artboard.bridgeSessionId!,
-    sourcePrefabPath: artboard.sourcePrefabPath ?? '',
-    workingPrefabPath: artboard.bridgeWorkingPrefabPath ?? '',
-    mode: 'temp-copy',
-    revision: artboard.bridgeRevision ?? '',
-  });
+  const response = await runWithRecoveredActiveSession(async (artboard) => {
+    debugLog('bridge-op', 'apply-visual-fields', {
+      sessionId: artboard.bridgeSessionId,
+      selectedBefore,
+      operationNodeIds,
+      fields: operations.map((item) => item.field),
+    });
+    await editorBridgeClient.applyVisualPatch(artboard.bridgeSessionId!, {
+      patchId: globalThis.crypto?.randomUUID?.() ?? `patch-${Date.now()}`,
+      baseRevision: artboard.bridgeRevision ?? '',
+      operations,
+    });
+    return stateFromSession({
+      sessionId: artboard.bridgeSessionId!,
+      sourcePrefabPath: artboard.sourcePrefabPath ?? '',
+      workingPrefabPath: artboard.bridgeWorkingPrefabPath ?? '',
+      mode: 'temp-copy',
+      revision: artboard.bridgeRevision ?? '',
+    });
+  }, '已恢复属性同步 session');
   const responseNodeIds = new Set(response.nodes.map((item) => item.nodeId));
   const selectedAfter = selectedBefore.filter((id) => responseNodeIds.has(id));
   const operationSelection = operationNodeIds.filter((id) => responseNodeIds.has(id));
@@ -919,8 +1021,9 @@ export async function setRectTransformFieldsOnBridge(nodeId: string, params: {
 
 export async function setTextOnBridge(nodeId: string, text: string) {
   if (isNodeLocked(nodeId)) return;
-  const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.setText(artboard.bridgeSessionId!, nodeId, text, { skipSnapshot: false });
+  const response = await runWithRecoveredActiveSession((artboard) =>
+    editorBridgeClient.setText(artboard.bridgeSessionId!, nodeId, text, { skipSnapshot: false }),
+  '已恢复文本同步 session');
   await applyBridgeStateToActiveArtboard(response, '文本已同步');
 }
 
@@ -938,8 +1041,9 @@ export async function setTextContentOnBridge(nodeId: string, text: string, richT
 
 export async function setTextStyleOnBridge(nodeId: string, params: { fontSize?: number; color?: string; fontPath?: string }) {
   if (isNodeLocked(nodeId)) return;
-  const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.setTextStyle(artboard.bridgeSessionId!, nodeId, params, { skipSnapshot: false });
+  const response = await runWithRecoveredActiveSession((artboard) =>
+    editorBridgeClient.setTextStyle(artboard.bridgeSessionId!, nodeId, params, { skipSnapshot: false }),
+  '已恢复文本样式 session');
   await applyBridgeStateToActiveArtboard(response, '文本样式已同步');
 }
 
@@ -952,27 +1056,32 @@ export async function renameNodeOnBridge(nodeId: string, name: string) {
 
 export async function setImageOnBridge(nodeId: string, spritePath: string) {
   if (isNodeLocked(nodeId)) return;
-  const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.setImage(artboard.bridgeSessionId!, nodeId, spritePath, { skipSnapshot: false });
+  const response = await runWithRecoveredActiveSession((artboard) =>
+    editorBridgeClient.setImage(artboard.bridgeSessionId!, nodeId, spritePath, { skipSnapshot: false }),
+  '已恢复图片同步 session');
   await applyBridgeStateToActiveArtboard(response, '图片已同步');
 }
 
 export async function setVisibleOnBridge(nodeId: string, visible: boolean) {
-  const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.setVisible(artboard.bridgeSessionId!, nodeId, visible, { skipSnapshot: false });
+  const response = await runWithRecoveredActiveSession((artboard) =>
+    editorBridgeClient.setVisible(artboard.bridgeSessionId!, nodeId, visible, { skipSnapshot: false }),
+  '已恢复显隐同步 session');
   await applyBridgeStateToActiveArtboard(response, '显隐已同步');
 }
 
 export async function setVisibleNodesOnBridge(nodeIds: string[], visible: boolean, selectedIdsOverride?: string[]) {
   const ids = [...new Set(nodeIds)].filter(Boolean);
   if (ids.length === 0) return;
-  const artboard = await ensureActiveBridgeArtboard();
   let response: ArtboardStateResponse | null = null;
-  for (let index = 0; index < ids.length; index += 1) {
-    response = await editorBridgeClient.setVisible(artboard.bridgeSessionId!, ids[index], visible, {
-      skipSnapshot: index < ids.length - 1,
-    });
-  }
+  response = await runWithRecoveredActiveSession(async (artboard) => {
+    let current: ArtboardStateResponse | null = null;
+    for (let index = 0; index < ids.length; index += 1) {
+      current = await editorBridgeClient.setVisible(artboard.bridgeSessionId!, ids[index], visible, {
+        skipSnapshot: index < ids.length - 1,
+      });
+    }
+    return current;
+  }, '已恢复显隐同步 session');
   if (response) await applyBridgeStateToActiveArtboard(response, '显隐已同步', selectedIdsOverride);
 }
 
@@ -981,19 +1090,20 @@ export async function setOpacityNodesOnBridge(nodeIds: string[], opacity: number
   if (ids.length === 0) return;
   const clamped = Math.max(0, Math.min(1, opacity));
   const operations: VisualPatchOperation[] = ids.map((nodeId) => op(nodeId, 'Graphic.alpha', { numberValue: clamped }));
-  const artboard = await ensureActiveBridgeArtboard();
-  await editorBridgeClient.applyVisualPatch(artboard.bridgeSessionId!, {
-    patchId: globalThis.crypto?.randomUUID?.() ?? `patch-${Date.now()}`,
-    baseRevision: artboard.bridgeRevision ?? '',
-    operations,
-  });
-  const response = await stateFromSession({
-    sessionId: artboard.bridgeSessionId!,
-    sourcePrefabPath: artboard.sourcePrefabPath ?? '',
-    workingPrefabPath: artboard.bridgeWorkingPrefabPath ?? '',
-    mode: 'temp-copy',
-    revision: artboard.bridgeRevision ?? '',
-  });
+  const response = await runWithRecoveredActiveSession(async (artboard) => {
+    await editorBridgeClient.applyVisualPatch(artboard.bridgeSessionId!, {
+      patchId: globalThis.crypto?.randomUUID?.() ?? `patch-${Date.now()}`,
+      baseRevision: artboard.bridgeRevision ?? '',
+      operations,
+    });
+    return stateFromSession({
+      sessionId: artboard.bridgeSessionId!,
+      sourcePrefabPath: artboard.sourcePrefabPath ?? '',
+      workingPrefabPath: artboard.bridgeWorkingPrefabPath ?? '',
+      mode: 'temp-copy',
+      revision: artboard.bridgeRevision ?? '',
+    });
+  }, '已恢复透明度同步 session');
   await applyBridgeStateToActiveArtboard(response, '透明度已同步', selectedIdsOverride);
 }
 
@@ -1018,11 +1128,15 @@ export async function deleteNodesOnBridge(nodeIds: string[]) {
 
   let response: ArtboardStateResponse | null = null;
   try {
-    for (let index = 0; index < ids.length; index += 1) {
-      response = await editorBridgeClient.deleteNode(artboard.bridgeSessionId!, ids[index], {
-        skipSnapshot: index < ids.length - 1,
-      });
-    }
+    response = await runWithRecoveredActiveSession(async (active) => {
+      let current: ArtboardStateResponse | null = null;
+      for (let index = 0; index < ids.length; index += 1) {
+        current = await editorBridgeClient.deleteNode(active.bridgeSessionId!, ids[index], {
+          skipSnapshot: index < ids.length - 1,
+        });
+      }
+      return current;
+    }, '已恢复删除 session');
   } catch (err: any) {
     showStatusMessage(`删除失败: ${err?.message || String(err)}`);
     throw err;
@@ -1044,11 +1158,12 @@ export async function deleteNodesFromBridgeSession(sessionId: string, nodeIds: s
 export async function duplicateNodesOnBridge(nodeIds: string[], offset = { x: 20, y: -20 }) {
   const ids = unlockedNodeIds(nodeIds);
   if (ids.length === 0) return;
-  const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.duplicateNodes(artboard.bridgeSessionId!, ids, {
-    offsetX: offset.x,
-    offsetY: offset.y,
-  }, { skipSnapshot: false });
+  const response = await runWithRecoveredActiveSession((artboard) =>
+    editorBridgeClient.duplicateNodes(artboard.bridgeSessionId!, ids, {
+      offsetX: offset.x,
+      offsetY: offset.y,
+    }, { skipSnapshot: false }),
+  '已恢复复制 session');
   await applyBridgeStateToActiveArtboard(response, ids.length > 1 ? '节点已复制' : '节点已复制');
 }
 
@@ -1068,16 +1183,18 @@ export async function copyNodesToActiveBridgeSession(sourceSessionId: string, no
 export async function groupNodesOnBridge(nodeIds: string[], name?: string) {
   const ids = unlockedNodeIds(nodeIds);
   if (ids.length === 0) return;
-  const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.groupNodes(artboard.bridgeSessionId!, ids, name || `Group_${Date.now().toString(36).slice(-4)}`, { skipSnapshot: false });
+  const response = await runWithRecoveredActiveSession((artboard) =>
+    editorBridgeClient.groupNodes(artboard.bridgeSessionId!, ids, name || `Group_${Date.now().toString(36).slice(-4)}`, { skipSnapshot: false }),
+  '已恢复编组 session');
   await applyBridgeStateToActiveArtboard(response, '节点已编组');
 }
 
 export async function ungroupNodesOnBridge(nodeIds: string[]) {
   const ids = unlockedNodeIds(nodeIds);
   if (ids.length === 0) return;
-  const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.ungroupNodes(artboard.bridgeSessionId!, ids, { skipSnapshot: false });
+  const response = await runWithRecoveredActiveSession((artboard) =>
+    editorBridgeClient.ungroupNodes(artboard.bridgeSessionId!, ids, { skipSnapshot: false }),
+  '已恢复解组 session');
   await applyBridgeStateToActiveArtboard(response, '节点已解组');
 }
 
@@ -1098,8 +1215,9 @@ export async function clearActiveBridgeArtboardChildren() {
 
 export async function reparentNodeOnBridge(nodeId: string, parentId: string | null, index?: number) {
   if (isNodeLocked(nodeId)) return;
-  const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.reparentNode(artboard.bridgeSessionId!, nodeId, parentId, index ?? -1, { skipSnapshot: false });
+  const response = await runWithRecoveredActiveSession((artboard) =>
+    editorBridgeClient.reparentNode(artboard.bridgeSessionId!, nodeId, parentId, index ?? -1, { skipSnapshot: false }),
+  '已恢复层级同步 session');
   await applyBridgeStateToActiveArtboard(response, '层级已同步');
 }
 
@@ -1109,14 +1227,17 @@ export async function reparentNodesOnBridge(
 ) {
   const filtered = operations.filter((item) => item.nodeId && !isNodeLocked(item.nodeId));
   if (filtered.length === 0) return;
-  const artboard = await ensureActiveBridgeArtboard();
   let response: ArtboardStateResponse | null = null;
-  for (let index = 0; index < filtered.length; index += 1) {
-    const item = filtered[index];
-    response = await editorBridgeClient.reparentNode(artboard.bridgeSessionId!, item.nodeId, item.parentId, item.index ?? -1, {
-      skipSnapshot: index < filtered.length - 1,
-    });
-  }
+  response = await runWithRecoveredActiveSession(async (artboard) => {
+    let current: ArtboardStateResponse | null = null;
+    for (let index = 0; index < filtered.length; index += 1) {
+      const item = filtered[index];
+      current = await editorBridgeClient.reparentNode(artboard.bridgeSessionId!, item.nodeId, item.parentId, item.index ?? -1, {
+        skipSnapshot: index < filtered.length - 1,
+      });
+    }
+    return current;
+  }, '已恢复层级同步 session');
   if (response) await applyBridgeStateToActiveArtboard(response, '层级已同步', selectedIdsOverride);
 }
 
@@ -1166,26 +1287,31 @@ export async function reorderNodesOnBridge(nodeIds: string[], direction: 'up' | 
   }
   if (operations.length === 0) return;
 
-  const artboard = await ensureActiveBridgeArtboard();
   let response: ArtboardStateResponse | null = null;
-  for (let index = 0; index < operations.length; index += 1) {
-    const op = operations[index];
-    response = await editorBridgeClient.reparentNode(artboard.bridgeSessionId!, op.nodeId, op.parentId, op.index, {
-      skipSnapshot: index < operations.length - 1,
-    });
-  }
+  response = await runWithRecoveredActiveSession(async (artboard) => {
+    let current: ArtboardStateResponse | null = null;
+    for (let index = 0; index < operations.length; index += 1) {
+      const op = operations[index];
+      current = await editorBridgeClient.reparentNode(artboard.bridgeSessionId!, op.nodeId, op.parentId, op.index, {
+        skipSnapshot: index < operations.length - 1,
+      });
+    }
+    return current;
+  }, '已恢复层级同步 session');
   if (response) await applyBridgeStateToActiveArtboard(response, '层级已同步', selectedIds);
 }
 
 export async function undoActiveBridgeArtboard() {
-  const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.undoArtboard(artboard.bridgeSessionId!, { skipSnapshot: false });
+  const response = await runWithRecoveredActiveSession((artboard) =>
+    editorBridgeClient.undoArtboard(artboard.bridgeSessionId!, { skipSnapshot: false }),
+  '已恢复撤销 session');
   await applyBridgeStateToActiveArtboard(response, '已撤销');
 }
 
 export async function redoActiveBridgeArtboard() {
-  const artboard = await ensureActiveBridgeArtboard();
-  const response = await editorBridgeClient.redoArtboard(artboard.bridgeSessionId!, { skipSnapshot: false });
+  const response = await runWithRecoveredActiveSession((artboard) =>
+    editorBridgeClient.redoArtboard(artboard.bridgeSessionId!, { skipSnapshot: false }),
+  '已恢复重做 session');
   await applyBridgeStateToActiveArtboard(response, '已重做');
 }
 
@@ -1193,8 +1319,8 @@ export async function closeBridgeArtboardSession(artboardId: string, pageId?: st
   const state = useEditorStore.getState();
   const page = state.pages.find((item) => item.id === (pageId ?? state.activePageId));
   const artboard = page?.artboards.find((item) => item.id === artboardId);
-  if (!artboard?.bridgeSessionId) return;
-  await editorBridgeClient.closePrefab(artboard.bridgeSessionId, true);
+  if (!artboard?.bridgeSessionId && !artboard?.bridgeWorkingPrefabPath) return;
+  await editorBridgeClient.closePrefab(artboard?.bridgeSessionId, true, artboard?.bridgeWorkingPrefabPath);
 }
 
 function colorWithAlpha(value: string | undefined): string | undefined {
@@ -1236,39 +1362,40 @@ function pushEffectOps(ops: VisualPatchOperation[], nodeId: string, prefix: 'Out
 }
 
 export async function createVisualNodeOnBridge(node: UINode) {
-  const artboard = await ensureActiveBridgeArtboard();
-  const point = unityPointFromEditor(node);
-  const parentId = node.parentId ?? artboard.bridgeRootNodeId ?? null;
-  const common = {
-    parentId,
-    name: node.name,
-    x: point.x,
-    y: point.y,
-    width: node.width,
-    height: node.height,
-  };
-  let response: ArtboardStateResponse;
-  if (['button', 'scrollview', 'toggle', 'inputfield', 'rawimage'].includes(node.type)) {
-    response = await editorBridgeClient.createWidgetNode(artboard.bridgeSessionId!, {
-      ...common,
-      widgetType: node.type,
-    }, { skipSnapshot: false });
-  } else if (node.type === 'text') {
-    response = await editorBridgeClient.createTextNode(artboard.bridgeSessionId!, {
-      ...common,
-      text: node.text ?? 'Text',
-      fontSize: node.style?.fontSize,
-      color: colorWithAlpha(node.style?.fontColor),
-    }, { skipSnapshot: false });
-  } else if (node.type === 'image' || node.type === 'rawimage') {
-    response = await editorBridgeClient.createImageNode(artboard.bridgeSessionId!, {
-      ...common,
-      spritePath: node.imageData,
-      color: colorWithAlpha(node.imageColor || '#FFFFFFFF'),
-    }, { skipSnapshot: false });
-  } else {
-    response = await editorBridgeClient.createFrameNode(artboard.bridgeSessionId!, common, { skipSnapshot: false });
-  }
+  const response = await runWithRecoveredActiveSession((artboard) => {
+    const point = unityPointFromEditor(node);
+    const parentId = node.parentId ?? artboard.bridgeRootNodeId ?? null;
+    const common = {
+      parentId,
+      name: node.name,
+      x: point.x,
+      y: point.y,
+      width: node.width,
+      height: node.height,
+    };
+    if (['button', 'scrollview', 'toggle', 'inputfield', 'rawimage'].includes(node.type)) {
+      return editorBridgeClient.createWidgetNode(artboard.bridgeSessionId!, {
+        ...common,
+        widgetType: node.type,
+      }, { skipSnapshot: false });
+    }
+    if (node.type === 'text') {
+      return editorBridgeClient.createTextNode(artboard.bridgeSessionId!, {
+        ...common,
+        text: node.text ?? 'Text',
+        fontSize: node.style?.fontSize,
+        color: colorWithAlpha(node.style?.fontColor),
+      }, { skipSnapshot: false });
+    }
+    if (node.type === 'image' || node.type === 'rawimage') {
+      return editorBridgeClient.createImageNode(artboard.bridgeSessionId!, {
+        ...common,
+        spritePath: node.imageData,
+        color: colorWithAlpha(node.imageColor || '#FFFFFFFF'),
+      }, { skipSnapshot: false });
+    }
+    return editorBridgeClient.createFrameNode(artboard.bridgeSessionId!, common, { skipSnapshot: false });
+  }, '已恢复创建节点 session');
   await applyBridgeStateToActiveArtboard(response, '节点已创建');
 }
 
@@ -1283,35 +1410,36 @@ export async function createWidgetNodeOnBridge(params: {
   spritePath?: string;
   color?: string;
 }) {
-  const artboard = await ensureActiveBridgeArtboard();
-  const common = {
-    parentId: params.parentId ?? artboard.bridgeRootNodeId ?? null,
-    name: params.name ?? params.widgetType,
-    x: params.x ?? 0,
-    y: params.y ?? 0,
-    width: params.width,
-    height: params.height,
-  };
-  let response: ArtboardStateResponse;
-  if (params.widgetType === 'frame') {
-    response = await editorBridgeClient.createFrameNode(artboard.bridgeSessionId!, common, { skipSnapshot: false });
-  } else if (params.widgetType === 'text') {
-    response = await editorBridgeClient.createTextNode(artboard.bridgeSessionId!, {
-      ...common,
-      text: params.name ?? 'Text',
-    }, { skipSnapshot: false });
-  } else if (params.widgetType === 'image') {
-    response = await editorBridgeClient.createImageNode(artboard.bridgeSessionId!, {
+  const response = await runWithRecoveredActiveSession((artboard) => {
+    const common = {
+      parentId: params.parentId ?? artboard.bridgeRootNodeId ?? null,
+      name: params.name ?? params.widgetType,
+      x: params.x ?? 0,
+      y: params.y ?? 0,
+      width: params.width,
+      height: params.height,
+    };
+    if (params.widgetType === 'frame') {
+      return editorBridgeClient.createFrameNode(artboard.bridgeSessionId!, common, { skipSnapshot: false });
+    }
+    if (params.widgetType === 'text') {
+      return editorBridgeClient.createTextNode(artboard.bridgeSessionId!, {
+        ...common,
+        text: params.name ?? 'Text',
+      }, { skipSnapshot: false });
+    }
+    if (params.widgetType === 'image') {
+      return editorBridgeClient.createImageNode(artboard.bridgeSessionId!, {
         ...common,
         spritePath: params.spritePath,
         color: params.color,
       }, { skipSnapshot: false });
-  } else {
-    response = await editorBridgeClient.createWidgetNode(artboard.bridgeSessionId!, {
-        ...common,
-        widgetType: params.widgetType,
-      }, { skipSnapshot: false });
-  }
+    }
+    return editorBridgeClient.createWidgetNode(artboard.bridgeSessionId!, {
+      ...common,
+      widgetType: params.widgetType,
+    }, { skipSnapshot: false });
+  }, '已恢复创建控件 session');
   await applyBridgeStateToActiveArtboard(response, '控件已创建');
 }
 
@@ -1458,33 +1586,33 @@ export async function syncNodeVisualDelta(prev: UINode | undefined, next: UINode
 }
 
 export async function insertPrefabIntoActiveArtboard(prefabPath: string, point: { x: number; y: number }) {
-  const artboard = await ensureActiveBridgeArtboard();
-  const rootNodeId = artboard.bridgeRootNodeId ?? null;
   const state = useEditorStore.getState();
   const viewportWidth = state.previewWidth;
   const viewportHeight = state.previewHeight;
   const startedAt = performance.now();
-  debugLog('bridge-insert', 'request', {
-    sessionId: artboard.bridgeSessionId,
-    artboardId: artboard.id,
-    artboardName: artboard.name,
-    prefabPath,
-    point: { x: Math.round(point.x), y: Math.round(point.y) },
-    unityPosition: {
+  const response = await runWithRecoveredActiveSession((artboard) => {
+    const rootNodeId = artboard.bridgeRootNodeId ?? null;
+    debugLog('bridge-insert', 'request', {
+      sessionId: artboard.bridgeSessionId,
+      artboardId: artboard.id,
+      artboardName: artboard.name,
+      prefabPath,
+      point: { x: Math.round(point.x), y: Math.round(point.y) },
+      unityPosition: {
+        x: Math.round(point.x - viewportWidth / 2),
+        y: Math.round(viewportHeight / 2 - point.y),
+      },
+      parentId: rootNodeId,
+      beforeNodeCount: Object.keys(artboard.nodes ?? {}).length,
+      beforeRootCount: artboard.rootIds?.length ?? 0,
+    });
+    return editorBridgeClient.insertPrefab(artboard.bridgeSessionId!, prefabPath, {
+      parentId: rootNodeId,
       x: Math.round(point.x - viewportWidth / 2),
       y: Math.round(viewportHeight / 2 - point.y),
-    },
-    parentId: rootNodeId,
-    beforeNodeCount: Object.keys(artboard.nodes ?? {}).length,
-    beforeRootCount: artboard.rootIds?.length ?? 0,
-  });
-  const response = await editorBridgeClient.insertPrefab(artboard.bridgeSessionId!, prefabPath, {
-    parentId: rootNodeId,
-    x: Math.round(point.x - viewportWidth / 2),
-    y: Math.round(viewportHeight / 2 - point.y),
-  }, { skipSnapshot: false });
+    }, { skipSnapshot: false });
+  }, '已恢复插入 session');
   debugLog('bridge-insert', 'response', {
-    sessionId: artboard.bridgeSessionId,
     prefabPath,
     elapsedMs: Math.round(performance.now() - startedAt),
     responseNodeCount: response.nodes.length,
@@ -1505,7 +1633,9 @@ export async function saveActiveBridgeArtboard(targetPath?: string | null, optio
   const target = options.saveAs || !artboard.sourcePrefabPath
     ? normalizeTargetPath(targetPath || artboard.bridgeTargetPrefabPath || defaultTargetFor(artboard.name))
     : null;
-  const result = await editorBridgeClient.saveArtboard(artboard.bridgeSessionId!, target);
+  const result = await runWithRecoveredActiveSession((active) =>
+    editorBridgeClient.saveArtboard(active.bridgeSessionId!, target),
+  '已恢复保存 session');
   updateActiveArtboard({
     name: basename(result.sourcePrefabPath || result.savedPath || artboard.name),
     sourcePrefabPath: result.sourcePrefabPath || result.savedPath || artboard.sourcePrefabPath,

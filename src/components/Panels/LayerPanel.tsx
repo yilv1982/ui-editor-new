@@ -1119,7 +1119,13 @@ function ArtboardListBar() {
                 className="w-full text-left px-3 py-1.5 text-[13px] text-[#f38ba8] hover:bg-[#45475a]"
                 onClick={() => {
                   const id = menu.artboardId;
-                  void closeBridgeArtboardSession(id).finally(() => deleteArtboard(id));
+                  void closeBridgeArtboardSession(id).catch((err) => {
+                    debugLog('artboard-delete', 'close-error', {
+                      artboardId: id,
+                      error: err instanceof Error ? err.message : String(err),
+                    });
+                  });
+                  deleteArtboard(id);
                   setMenu(null);
                 }}
               >

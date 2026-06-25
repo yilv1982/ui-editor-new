@@ -583,6 +583,7 @@ public static partial class UIEditorNewBridgeCore
         // 常驻隔离实例方案下，桥运行时对象（working root / undo-redo 快照 / drawcall / 相机）都活在
         // 各 session 私有 PreviewScene 内。重编译前 / Stop 时的兜底清理 = 关闭所有 session 的 PreviewScene
         // 并销毁常驻相机；CleanupBridgeOwnedSceneObjects 再兜底清理任何残留的桥隐藏对象。
+        FlushAllDirtySessionsToDisk();
         try
         {
             foreach (SessionState session in Sessions.Values)
