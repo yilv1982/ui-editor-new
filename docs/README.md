@@ -19,6 +19,7 @@
 - `ngui-rewrite-plan.md`：NGUI 支持完整重写方案（根因、常驻隔离实例生命周期、桥侧/前端改造、bbox 同源、延迟链路、实施步骤）。
 - `ngui-isolation-change.md`：为根治 NGUI 渲染污染对客户端事实源 NGUI 源码（`UIDrawCall.cs`）的改动记录（原因、机制、改了哪、三重守卫、验证）。
 - `ngui-interaction-todo.md`：NGUI 交互功能待办（属性面板 framework 分支、控件创建分支、拖动回填等 Step 7-8 细化清单）。
+- `handover-deploy.md`：交接部署集成文档（工程定位、部署步骤、工程外改动、已知问题、接手检查清单）。
 
 ## 后续文档主题
 
