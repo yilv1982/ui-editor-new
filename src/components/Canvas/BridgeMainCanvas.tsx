@@ -48,6 +48,8 @@ const AXIS_LEN = 58;
 const AXIS_HIT = 12;
 const ROTATE_PAD = 28;
 const MIN_NODE_SIZE = 1;
+const PICK_CYCLE_RADIUS_PX = 4;
+const PICK_CYCLE_TIMEOUT_MS = 1600;
 
 const RESOLUTION_PRESETS = [
   { w: DEFAULT_PREVIEW_WIDTH, h: DEFAULT_PREVIEW_HEIGHT, label: `${DEFAULT_PREVIEW_WIDTH}x${DEFAULT_PREVIEW_HEIGHT} (默认)` },
@@ -92,17 +94,39 @@ type TransformSession = {
   startAngle: number;
   latest: TransformPreview;
 };
+type PickCycleState = { clientX: number; clientY: number; key: string; index: number; time: number };
 
-function pickBboxAtPoint(bboxes: BboxRecord[], x: number, y: number, rootNodeId?: string | null): BboxRecord | null {
+function collectBboxesAtPoint(bboxes: BboxRecord[], x: number, y: number, rootNodeId?: string | null): BboxRecord[] {
   const nodes = useEditorStore.getState().nodes;
+  const hits: BboxRecord[] = [];
   for (let i = bboxes.length - 1; i >= 0; i -= 1) {
     const box = bboxes[i];
     if (!box.activeInHierarchy || box.width <= 1 || box.height <= 1) continue;
     if (box.nodeId === rootNodeId) continue;
     if (nodes[box.nodeId]?.locked) continue;
-    if (x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) return box;
+    if (x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) hits.push(box);
   }
-  return null;
+  return hits;
+}
+
+function pickBboxAtPoint(bboxes: BboxRecord[], x: number, y: number, rootNodeId?: string | null): BboxRecord | null {
+  return collectBboxesAtPoint(bboxes, x, y, rootNodeId)[0] ?? null;
+}
+
+function pickBboxFromCycle(hits: BboxRecord[], clientX: number, clientY: number, prev: PickCycleState | null): { box: BboxRecord | null; cycle: PickCycleState | null } {
+  if (hits.length === 0) return { box: null, cycle: null };
+  const key = hits.map((box) => box.nodeId).join('\u001f');
+  const now = Date.now();
+  const canContinue = !!prev
+    && prev.key === key
+    && now - prev.time <= PICK_CYCLE_TIMEOUT_MS
+    && Math.abs(prev.clientX - clientX) <= PICK_CYCLE_RADIUS_PX
+    && Math.abs(prev.clientY - clientY) <= PICK_CYCLE_RADIUS_PX;
+  const index = canContinue ? (prev.index + 1) % hits.length : 0;
+  return {
+    box: hits[index],
+    cycle: { clientX, clientY, key, index, time: now },
+  };
 }
 
 function pickBboxesInRect(
@@ -289,6 +313,7 @@ export default function BridgeMainCanvas() {
   const guideDragRef = useRef<{ axis: 'h' | 'v'; existingId?: number; startClientPos: number } | null>(null);
   const annDraftRef = useRef<{ startDesign: { x: number; y: number }; type: 'arrow' | 'rect' | 'dimension' } | null>(null);
   const dblClickRef = useRef<{ nodeId: string; time: number } | null>(null);
+  const pickCycleRef = useRef<PickCycleState | null>(null);
   const transformRef = useRef<TransformSession | null>(null);
   const lastViewportArtboardIdRef = useRef<string | null>(null);
 
@@ -953,9 +978,12 @@ export default function BridgeMainCanvas() {
       return;
     }
 
-    const hit = snapshot
-      ? pickBboxAtPoint(snapshot.bboxes, point.x + snapshotViewport.x, point.y + snapshotViewport.y, activeArtboard?.bridgeRootNodeId)
-      : null;
+    const hits = snapshot
+      ? collectBboxesAtPoint(snapshot.bboxes, point.x + snapshotViewport.x, point.y + snapshotViewport.y, activeArtboard?.bridgeRootNodeId)
+      : [];
+    const picked = pickBboxFromCycle(hits, event.clientX, event.clientY, pickCycleRef.current);
+    const hit = picked.box;
+    pickCycleRef.current = picked.cycle;
     if (!hit) {
       st.setSelectedIds([]);
       measureRef.current = { startX: event.clientX, startY: event.clientY, measuring: false };
@@ -977,6 +1005,7 @@ export default function BridgeMainCanvas() {
     } else {
       st.setSelectedIds([hit.nodeId]);
     }
+    if (hits.length > 1) st.revealSelectedInLayer();
     const now = Date.now();
     const prev = dblClickRef.current;
     if (prev && prev.nodeId === hit.nodeId && now - prev.time < 400 && node?.type === 'text') {
@@ -1168,6 +1197,8 @@ export default function BridgeMainCanvas() {
       setDragPreview(null);
       const x = Math.round(drag.startX + drag.deltaX);
       const y = Math.round(drag.startY - drag.deltaY);
+      if (x === drag.startX && y === drag.startY) return;
+      pickCycleRef.current = null;
       ignoreNextNodeSyncRef.current += 1;
       useEditorStore.getState().moveNode(drag.nodeId, x, y);
       void moveNodeOnBridge(drag.nodeId, x, y, false).catch((err) => setError(err instanceof Error ? err.message : String(err)));
@@ -1216,6 +1247,7 @@ export default function BridgeMainCanvas() {
     dragRef.current = null;
     transformRef.current = null;
     measureRef.current = null;
+    pickCycleRef.current = null;
     panRef.current = null;
     annDraftRef.current = null;
     setDragPreview(null);
