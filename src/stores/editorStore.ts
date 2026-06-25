@@ -42,6 +42,9 @@ interface HistoryEntry {
 const PREVIEW_RESOLUTION_STORAGE_KEY = 'uieditor_preview_resolution';
 const PREVIEW_RESOLUTION_STORAGE_VERSION = 3;
 const BRIDGE_WORKSPACE_STORAGE_KEY = 'uieditor_new_bridge_workspace_v1';
+const BRIDGE_WORKSPACE_STORAGE_KEY_PREFIX = `${BRIDGE_WORKSPACE_STORAGE_KEY}:`;
+const BRIDGE_WORKSPACE_ACTIVE_ID_KEY = 'uieditor_new_bridge_active_workspace_id_v1';
+const BRIDGE_WORKSPACE_URL_PARAM = 'workspace';
 const BRIDGE_WORKSPACE_STORAGE_VERSION = 1;
 
 function snapCanvasPixel(value: number): number {
@@ -86,8 +89,73 @@ function persistPreviewResolutionPreference(width: number, height: number) {
 
 const initialPreviewResolution = readPreviewResolutionPreference();
 
+function sanitizeBridgeWorkspaceId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!/^[A-Za-z0-9_-]{6,80}$/.test(text)) return null;
+  return text;
+}
+
+function bridgeWorkspaceStorageKey(workspaceId: string): string {
+  return `${BRIDGE_WORKSPACE_STORAGE_KEY_PREFIX}${workspaceId}`;
+}
+
+function readJsonSync(path: string): any | null {
+  if (typeof window === 'undefined' || typeof XMLHttpRequest === 'undefined') return null;
+  try {
+    const request = new XMLHttpRequest();
+    request.open('GET', path, false);
+    request.setRequestHeader('Accept', 'application/json');
+    request.send();
+    if (request.status < 200 || request.status >= 300 || !request.responseText) return null;
+    return JSON.parse(request.responseText);
+  } catch {
+    return null;
+  }
+}
+
+function readMachineDefaultWorkspaceId(): string | null {
+  if (typeof window === 'undefined') return null;
+  const injected = sanitizeBridgeWorkspaceId((window as any).__UIEDITOR_DEFAULT_WORKSPACE_ID__);
+  if (injected) return injected;
+  const response = readJsonSync('/api/workspace/default');
+  return sanitizeBridgeWorkspaceId(response?.workspaceId);
+}
+
+function replaceWorkspaceIdInUrl(workspaceId: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get(BRIDGE_WORKSPACE_URL_PARAM) === workspaceId) return;
+    url.searchParams.set(BRIDGE_WORKSPACE_URL_PARAM, workspaceId);
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // URL persistence is best-effort; localStorage still keeps the active workspace.
+  }
+}
+
+function resolveBridgeWorkspaceId(): { workspaceId: string; explicitUrlWorkspaceId: boolean } {
+  if (typeof window === 'undefined') return { workspaceId: 'default', explicitUrlWorkspaceId: false };
+  try {
+    const url = new URL(window.location.href);
+    const urlWorkspaceId = sanitizeBridgeWorkspaceId(url.searchParams.get(BRIDGE_WORKSPACE_URL_PARAM));
+    const machineWorkspaceId = readMachineDefaultWorkspaceId();
+    const activeWorkspaceId = sanitizeBridgeWorkspaceId(window.localStorage.getItem(BRIDGE_WORKSPACE_ACTIVE_ID_KEY));
+    const workspaceId = urlWorkspaceId ?? machineWorkspaceId ?? activeWorkspaceId ?? uuid();
+    if (!urlWorkspaceId) window.localStorage.setItem(BRIDGE_WORKSPACE_ACTIVE_ID_KEY, workspaceId);
+    if (!urlWorkspaceId) replaceWorkspaceIdInUrl(workspaceId);
+    return { workspaceId, explicitUrlWorkspaceId: !!urlWorkspaceId };
+  } catch {
+    return { workspaceId: uuid(), explicitUrlWorkspaceId: false };
+  }
+}
+
+const bridgeWorkspaceBinding = resolveBridgeWorkspaceId();
+const bridgeWorkspaceId = bridgeWorkspaceBinding.workspaceId;
+
 type BridgeWorkspaceSnapshot = {
   version: number;
+  workspaceId?: string;
   activePageId?: string;
   activeArtboardId?: string;
   previewWidth?: number;
@@ -132,7 +200,16 @@ function readBridgeWorkspaceSnapshot(defaultWidth: number, defaultHeight: number
 } | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = window.localStorage.getItem(BRIDGE_WORKSPACE_STORAGE_KEY);
+    const storageKey = bridgeWorkspaceStorageKey(bridgeWorkspaceId);
+    const serverSnapshot = readJsonSync(`/api/workspaces/${encodeURIComponent(bridgeWorkspaceId)}`);
+    let raw = serverSnapshot ? JSON.stringify(serverSnapshot) : window.localStorage.getItem(storageKey);
+    if (!raw && !bridgeWorkspaceBinding.explicitUrlWorkspaceId) {
+      const legacyRaw = window.localStorage.getItem(BRIDGE_WORKSPACE_STORAGE_KEY);
+      if (legacyRaw) {
+        raw = legacyRaw;
+        window.localStorage.setItem(storageKey, legacyRaw);
+      }
+    }
     if (!raw) return null;
     const data = JSON.parse(raw) as BridgeWorkspaceSnapshot;
     if (!data || data.version !== BRIDGE_WORKSPACE_STORAGE_VERSION || !Array.isArray(data.pages)) return null;
@@ -228,19 +305,35 @@ function writeBridgeWorkspaceSnapshot(state: EditorState) {
     })).filter((page) => page.artboards.length > 0);
 
     if (pages.length === 0) {
-      window.localStorage.removeItem(BRIDGE_WORKSPACE_STORAGE_KEY);
+      window.localStorage.removeItem(bridgeWorkspaceStorageKey(bridgeWorkspaceId));
+      window.localStorage.setItem(BRIDGE_WORKSPACE_ACTIVE_ID_KEY, bridgeWorkspaceId);
+      fetch(`/api/workspaces/${encodeURIComponent(bridgeWorkspaceId)}`, { method: 'DELETE' }).catch(() => {
+        // localStorage cleanup is enough when the dev server is unavailable.
+      });
       return;
     }
 
-    window.localStorage.setItem(BRIDGE_WORKSPACE_STORAGE_KEY, JSON.stringify({
+    const snapshot = {
       version: BRIDGE_WORKSPACE_STORAGE_VERSION,
+      workspaceId: bridgeWorkspaceId,
       activePageId: state.activePageId,
       activeArtboardId: state.activeArtboardId,
       previewWidth: state.previewWidth,
       previewHeight: state.previewHeight,
       savedAt: new Date().toISOString(),
       pages,
-    }));
+    };
+
+    window.localStorage.setItem(BRIDGE_WORKSPACE_ACTIVE_ID_KEY, bridgeWorkspaceId);
+    replaceWorkspaceIdInUrl(bridgeWorkspaceId);
+    window.localStorage.setItem(bridgeWorkspaceStorageKey(bridgeWorkspaceId), JSON.stringify(snapshot));
+    fetch(`/api/workspaces/${encodeURIComponent(bridgeWorkspaceId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(snapshot),
+    }).catch(() => {
+      // localStorage remains the fallback when the dev server is unavailable.
+    });
   } catch {
     // Keep Bridge editing usable when browser persistence is unavailable.
   }
