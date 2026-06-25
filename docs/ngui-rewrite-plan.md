@@ -53,7 +53,7 @@ UGUI 路径完全不动（UguiAdapter 每次截图自建临时实例渲染再销
 
 ## 桥侧 C# 重构
 
-**NguiSupport.cs（1678 → 约 700 行）**
+**NguiSupport.cs（1678 → 1145 行，已完成）**
 - 删：静态状态捕获恢复（329-492,1187-1345）、运行时对象清理（499-1047）、suspend 机器（513-530,662-811）、`BuildRuntimeCleanupReport`（532-660）；`ForceNguiRefresh`（256-327）瘦身为 `MarkAsChanged` + 一次 `UIPanel.LateUpdate`。
 - 保留并扩展：框架识别、bbox 链（132-242）、属性读写 `BuildNgui*Summary`/`ApplyNgui*Operation`/`ReadNgui*FieldAsString`（1369-1658）；原 `GetEffectiveBehaviourEnabled` 调用点改直接 `behaviour.enabled`。
 - 新增：`EnsureSessionNguiCamera`（previewScene 内常驻离屏相机，cullingMask=`1<<CaptureLayer`，orthographic）、`EnableAndPrimeNgui`（整树进 CaptureLayer + NGUI 组件 enabled + 首帧 LateUpdate）。
@@ -115,6 +115,10 @@ NGUI 字段 → 桥 field/端点（复用现有 `apply-visual-patch`/`set-text`/
 改法：
 - `onPointerMove`（1061-1066）更新乐观 `dragPreview` 同时，节流 120–150ms 发一次带 snapshot 的 `moveNode` 回填；松手发最终一次。`ignoreNextNodeSyncRef`（1106）沿用避免回填覆盖正在拖动的本地值；收到 ≥ 该请求 revision 的回填后清零 `dragPreview`。
 - 防乱序：`renderSnapshot`/`moveNode`/`resizeNode`（EditorBridgeClient.ts:338,421,425）增 `options.signal` 透传 `fetch(..., {signal})`；拖动每次发新回填前 `abort()` 上一个未完成请求；再加单调 `requestSeq`，处理回填时丢弃 `seq < latestSeq`（abort + seq 双保险）。
+
+## 实施进度
+
+Step 1-6 已完成并提交（`536a2cf` + `72dd7f4` 等），后续 `mvp-45`~`mvp-81` 持续修复：UIDrawCall manager 归属清理、PreviewScene 隔离、UGUI/NGUI adapter 拆分、UGUI 截图改 JPEG、画板 framework 单路由、机器级 workspace 持久化、session 域重载恢复、NGUI panel 静态表清理、删除扩展截图死代码。`DD_FP_HeroDisplay` NGUI 样本 open/render/close 通过，主工程无污染，`npm run smoke:ngui-snapshot` 通过。Step 7（前端 NGUI 属性栏分支）和 Step 8（拖动节流真值回填 + Abort）待实施。
 
 ## 实施步骤（每步独立可验，Git 历史连续）
 

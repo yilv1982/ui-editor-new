@@ -1,6 +1,6 @@
 # Unity Editor Bridge API 草案
 
-更新时间：2026-06-23。
+更新时间：2026-06-25。
 
 本文件定义 `UIEditor_new` 截图式受控视觉编辑链路需要的 Unity Editor 本地 HTTP API。当前 Unity 工程已有老 UIEditor 的 `UIEditorCorsProxy`、`UIEditorBridgeSync`、`UIEditorReferenceCapture`，已能提供 `/health`、`/sync-preview`、`/sync-incremental`、`/capture-reference`。这些脚本只能作为实现参考；`UIEditor_new` 必须建立独立桥接服务，不能扩展、复用或改写老 UIEditor 的运行时桥接入口。
 
@@ -217,7 +217,7 @@ http://127.0.0.1:18082
 {
   "ok": true,
   "name": "UIEditorNewBridge",
-  "version": "UIEditor_new-bridge-draft-1",
+  "version": "UIEditor_new-bridge-mvp-81",
   "projectPath": "E:/Projects/Dreamland/fact-source/DreamlandProject",
   "capabilities": [
     "openPrefab",
@@ -390,7 +390,7 @@ http://127.0.0.1:18082
 
 `imageMode` 首版支持：
 
-- `file`：返回本地代理可读取的临时文件路径，适合大图。
+- `file`：返回本地代理可读取的临时文件路径，适合大图。UGUI 截图为 JPEG（质量 80），NGUI 截图为 PNG（保留透明背景）。
 - `base64`：返回 data URL，适合小样本或调试。
 
 ### `POST /create-frame-node`
@@ -761,8 +761,8 @@ http://127.0.0.1:18082
 - [x] 节点编辑改为内存 working root：高频操作不再逐次 `SaveAsPrefabAsset`，15 秒 idle 自动落盘；`UIBlueBtn` / `UIAlert2` 直接 profile 中 `move-node(skipSnapshot)` 已降到约 1-6ms 的 Unity 执行时间。
 - [~] 改造 `SelectionOverlay`：首版没有直接复用旧 `SelectionOverlay`，而是在 `RemoteArtboardEditor` 内独立实现 bbox 选择和拖拽；后续需要抽成通用 overlay 模型。
 - [~] 改造 Toolbar：新流程 MVP 工具条暂时放在 `RemoteArtboardEditor` 内；全局 Toolbar 后续再拆掉旧同步按钮或改为调用新 session。
-- [ ] 改造缩略图生成：无缓存时请求 `renderSnapshot`，不等待 WebGL ready。
-- [ ] 隔离旧 MCP/WebGL 告警：不让旧链路失败影响新流程服务状态。
+- [x] 改造缩略图生成：无缓存时通过 Bridge readonly `renderSnapshot` 渲染已保存 Prefab，不等待 WebGL ready。
+- [~] 隔离旧 MCP/WebGL 告警：旧 MCP 告警已降级为前端噪声，不作为新流程 Unity 可用性判断依据。
 - [x] 建立两个低风险样本闭环：`UICommons/UIBlueBtn.prefab` 与 `UICommons/UIAlert2.prefab` 临时副本已通过 Web 完成 open -> export -> render -> drag patch -> validate -> save。
 
 ## MVP 验收

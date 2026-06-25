@@ -27,18 +27,21 @@
 - 两条路线都不应直接写正式业务 Prefab 做首轮验证；`UIEditor_new` 首轮只写 `Assets/Temp/UIEditorNew/` 下的临时副本。
 - 可复制老桥中已经验证过的渲染、Prefab 归一化、Rect/BBox 计算思路，但复制后必须改名、改目录、改端口并移除对老静态状态的依赖。
 
-## 推荐客户端脚本拆分
+## 客户端脚本实际拆分
 
-`UIEditor_new` 首批客户端脚本建议放在：
+`UIEditor_new` 桥接源码维护在 `UIEditor_new/unity/Assets/Editor/UIEditorNew/`，客户端工程 `DreamlandProject/Assets/Editor/UIEditorNew` 通过 junction 指向该目录。当前实现是 `UIEditorNewBridgeCore` 的 partial class 拆分：
 
 ```text
 Assets/Editor/UIEditorNew/
-  UIEditorNewBridgeServer.cs
-  UIEditorNewSessionStore.cs
-  UIEditorNewPrefabExporter.cs
-  UIEditorNewSnapshotRenderer.cs
-  UIEditorNewPatchApplier.cs
-  UIEditorNewProtectedDiff.cs
+  UIEditorNewBridgeServer.cs                   HTTP 服务、端口 18082、菜单 UIEditorNew/...
+  UIEditorNewBridgeCore.cs                     会话、临时 Prefab、节点操作、protected diff、保存
+  UIEditorNewBridgeCore.FrameworkAdapters.cs   框架适配路由
+  UIEditorNewBridgeCore.UguiAdapter.cs         UGUI 截图（独立 Camera+RenderTexture+JPEG）
+  UIEditorNewBridgeCore.UguiSupport.cs         UGUI bbox/字段
+  UIEditorNewBridgeCore.NguiAdapter.cs         NGUI 截图（常驻隔离实例+PNG）
+  UIEditorNewBridgeCore.NguiSupport.cs         NGUI 生命周期/字段（已删打地鼠代码，1145 行）
+  UIEditorNewBridgeCore.SceneCapture.cs        场景隔离捕获
+  UIEditorNewBridgeCore.SnapshotSupport.cs     截图公共支撑
 ```
 
 菜单项统一使用：

@@ -7,9 +7,9 @@
 ## 前置状态
 
 - `UIEditor_new` Web 服务运行在 `http://127.0.0.1:4105/`。
-- 新桥 `http://127.0.0.1:8082/health` 返回 `UIEditorNewBridge`。
+- 新桥 `http://127.0.0.1:18082/health` 返回 `UIEditorNewBridge`。
 - 老桥 `http://127.0.0.1:8081/health` 保持独立，不作为新流程依赖。
-- `unity-config.json` 中 `editorBridgeUrl` 为 `http://127.0.0.1:8082`。
+- `unity-config.json` 中 `editorBridgeUrl` 为 `http://127.0.0.1:18082`。
 
 ## 覆盖能力
 

@@ -362,6 +362,7 @@ UIEditor_new/
 | `src/services/BridgeArtboardStore.ts` | 画板状态、Bridge session、操作队列和刷新恢复。 |
 | `src/services/RuntimeDebugBridge.ts` | 浏览器烟测和调试辅助接口。 |
 | `src/plugins/prefabServer.ts` | Prefab、组件和资源查询接口。 |
+| `unity/Assets/Editor/UIEditorNew/` | Unity 侧 Editor Bridge：会话、截图、patch、protected diff、保存（UGUI/NGUI adapter）。 |
 
 ## Bridge API 概览
 
@@ -441,6 +442,7 @@ npm run build
 npm run smoke:bridge-web
 npm run smoke:bridge-shell
 npm run smoke:bridge-ops
+npm run smoke:ngui-snapshot
 npm run smoke:thumbnail-cache
 npm run smoke:thumbnail-render
 ```
@@ -452,6 +454,7 @@ npm run smoke:thumbnail-render
 - `smoke:bridge-ops`：验证 Bridge API、视觉字段 patch、复制粘贴、组合、撤销重做、protected diff 和临时 Prefab 清理。
 - `smoke:thumbnail-cache`：验证缩略图缓存不接受临时工作路径。
 - `smoke:thumbnail-render`：验证 Unity readonly 缩略图渲染、裁剪和非空内容。
+- `smoke:ngui-snapshot`：验证 NGUI Prefab（默认 `DD_FP_HeroDisplay`）的 bridge 截图、bbox 有效性、重复渲染稳定性和 resume 一致性。
 
 ## 验收口径
 

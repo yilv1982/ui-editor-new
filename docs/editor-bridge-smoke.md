@@ -7,7 +7,7 @@
 ## 结论
 
 - 客户端工程已新增独立目录 `Assets/Editor/UIEditorNew/`。
-- 新桥 `UIEditorNewBridgeServer` 自动监听 `http://127.0.0.1:8082`，健康检查返回 `UIEditorNewBridge`。
+- 新桥 `UIEditorNewBridgeServer` 自动监听 `http://127.0.0.1:18082`，健康检查返回 `UIEditorNewBridge`。
 - 老 UIEditor 桥 `http://127.0.0.1:8081/health` 同时可用，返回 `UIEditorCorsProxy`。
 - 新桥不调用老桥的 `/sync-preview`、`/sync-incremental`、`/capture-reference`，不写 `UIEditorCorsProxy.LastSyncJson`。
 - `UICommons/UIBlueBtn.prefab` 临时副本已跑通 `open -> export -> render -> patch -> validate -> save -> close`。
@@ -18,8 +18,8 @@
 ## 实测摘要
 
 ```text
-GET  http://127.0.0.1:8082/health
--> {"ok":true,"name":"UIEditorNewBridge","version":"UIEditor_new-bridge-mvp-1",...}
+GET  http://127.0.0.1:18082/health
+-> {"ok":true,"name":"UIEditorNewBridge","version":"UIEditor_new-bridge-mvp-81",...}
 
 GET  http://127.0.0.1:8081/health
 -> {"ok":true,"name":"UIEditorCorsProxy"}

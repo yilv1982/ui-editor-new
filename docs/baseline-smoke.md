@@ -6,12 +6,17 @@
 
 ## 结论
 
+更新时间：2026-06-25。
+
 - `npm run build` 已通过。
 - Vite dev server 默认使用 `http://127.0.0.1:4105/`，端口固定为 4 开头以区别老 UIEditor。
 - 当前项目 Prefab/组件解析接口可用。
 - 老 UIEditor 的 Unity 本地 HTTP 代理 `http://127.0.0.1:8081/health` 可用，但只作为老工具状态，不作为 `UIEditor_new` 主链路。
-- `UIEditor_new` 独立桥接服务 `http://127.0.0.1:8082/health` 可用，返回 `UIEditorNewBridge`。
-- 主画布已替换为 Unity Editor Bridge 截图叠加编辑层，不再默认加载旧 `/unity/Build/unity.loader.js`。
+- `UIEditor_new` 独立桥接服务 `http://127.0.0.1:18082/health` 可用，返回 `UIEditorNewBridge`，当前运行版本 `UIEditor_new-bridge-mvp-81`。
+- Unity 侧桥接源码在 `unity/Assets/Editor/UIEditorNew/`，客户端工程通过 junction 指向该目录；`.meta` 已忽略。
+- 主画布已替换为 Unity Editor Bridge 截图叠加编辑层（`BridgeMainCanvas`），不再加载旧 `/unity/Build/unity.loader.js`。
+- UGUI 截图编码已改为 JPEG（质量 80），NGUI 保留 PNG 透明背景。
+- NGUI 支持已完成重写第一步：改 `UIDrawCall.cs` drawcall 出生跟随 manager scene，working root 移入 session PreviewScene，桥侧删除约 55% 打地鼠代码；`DD_FP_HeroDisplay` 可正常 open/render/close。详见 `ngui-rewrite-plan.md` 与 `ngui-isolation-change.md`。
 - 前端仍会出现旧 MCP 连接失败告警；当前新流程不以 MCP 告警作为 Unity 可用性判断依据。
 
 ## 命令与结果
@@ -77,7 +82,7 @@ src/App.tsx -> src/components/Canvas/BridgeMainCanvas.tsx
 200 http://127.0.0.1:4105/api/components/list components=88
 200 http://127.0.0.1:4105/api/prefabs/parse?path=UICommons%2FUIBlueBtn.prefab name=UIBlueBtn
 200 http://127.0.0.1:8081/health name=UIEditorCorsProxy
-200 http://127.0.0.1:8082/health name=UIEditorNewBridge
+200 http://127.0.0.1:18082/health name=UIEditorNewBridge
 ```
 
 ## 解释
@@ -90,4 +95,4 @@ src/App.tsx -> src/components/Canvas/BridgeMainCanvas.tsx
 - 用 Unity Editor Bridge 的 `exportNodeTree` 返回节点树和 bbox，替代 WebGL runtime bounds。
 - 用 `applyVisualPatch` + `validateProtectedDiff` 替代 StoreSync 的持续全量/增量 WebGL 同步。
 - 保留现有 `/api/prefabs/list`、`/api/components/list`、`/api/prefabs/parse` 作为 Web 侧选择、搜索和静态导入的辅助接口。
-- 新增独立 `UIEditorNew` 客户端桥接服务，默认监听 `http://127.0.0.1:8082`，不扩展老 `UIEditorCorsProxy`。
+- 新增独立 `UIEditorNew` 客户端桥接服务，默认监听 `http://127.0.0.1:18082`，不扩展老 `UIEditorCorsProxy`。
