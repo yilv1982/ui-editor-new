@@ -11,6 +11,14 @@ const COMMON_PART_DIR = PROJECT_ROOT + '/' + ASSET_PATHS.commonPart;
 const FONT_DIR = PROJECT_ROOT + '/' + ASSET_PATHS.font;
 const EXCLUDE_DIRS = new Set(['CommonPart']); // 排除通用组件目录
 
+function isTemporaryUiEditorPrefabPath(value: string): boolean {
+  const normalized = value.replace(/\\/g, '/').replace(/^\/+/, '');
+  return normalized.startsWith('Assets/Temp/UIEditorNew/') ||
+    normalized.startsWith('Temp/UIEditorNew/') ||
+    normalized.includes('/Assets/Temp/UIEditorNew/') ||
+    normalized.includes('/Temp/UIEditorNew/');
+}
+
 // guid → 可访问的 URL 路径 (如 /atlas-file/common/textures/xxx.png)
 let guidToUrlCache: Map<string, string> | null = null;
 // guid → spriteBorder [left, right, top, bottom]
@@ -2732,24 +2740,28 @@ export function prefabServerPlugin(): Plugin {
       buildCaches();
       console.log(`[prefabServer] 缓存构建完成，耗时 ${Date.now() - cacheStart}ms`);
 
-      // 递归扫描目录下所有 .prefab 文件（排除 CommonPart）
+      // 递归扫描目录下所有 .prefab 文件（排除 CommonPart 和 UIEditorNew 临时工作副本）
       function scanPrefabFiles(dir: string, relDir: string = ''): { name: string; file: string; category: string; relPath: string }[] {
         const results: { name: string; file: string; category: string; relPath: string }[] = [];
         try {
           const entries = fs.readdirSync(dir, { withFileTypes: true });
           for (const entry of entries) {
+            const diskPath = path.join(dir, entry.name);
             if (entry.isDirectory()) {
               if (EXCLUDE_DIRS.has(entry.name)) continue;
               const subRel = relDir ? `${relDir}/${entry.name}` : entry.name;
-              results.push(...scanPrefabFiles(path.join(dir, entry.name), subRel));
+              if (isTemporaryUiEditorPrefabPath(subRel) || isTemporaryUiEditorPrefabPath(diskPath)) continue;
+              results.push(...scanPrefabFiles(diskPath, subRel));
             } else if (entry.name.endsWith('.prefab')) {
               const prefabName = entry.name.replace('.prefab', '');
               const category = relDir.split('/')[0] || 'Root';
+              const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
+              if (isTemporaryUiEditorPrefabPath(relPath) || isTemporaryUiEditorPrefabPath(diskPath)) continue;
               results.push({
                 name: prefabName,
                 file: entry.name,
                 category,
-                relPath: relDir ? `${relDir}/${entry.name}` : entry.name,
+                relPath,
               });
             }
           }
@@ -2764,7 +2776,7 @@ export function prefabServerPlugin(): Plugin {
           ...item,
           category: `${normalizedRoot.replace(/^Assets\//, '')}/${item.category}`,
           relPath: `${normalizedRoot}/${item.relPath}`.replace(/\\/g, '/'),
-        }));
+        })).filter((item) => !isTemporaryUiEditorPrefabPath(item.relPath));
       }
 
       function resolvePrefabDiskPath(relPath: string): string {
@@ -2849,13 +2861,14 @@ export function prefabServerPlugin(): Plugin {
         return result;
       }
 
-      // GET /api/prefabs/list — 返回所有 UI 预制体列表（按目录分类，排除 CommonPart）
+      // GET /api/prefabs/list — 返回所有 UI 预制体列表（按目录分类，排除 CommonPart 和临时工作副本）
       server.middlewares.use('/api/prefabs/list', (_req, res) => {
         try {
           const files = [
             ...scanPrefabFiles(UI_PREFAB_ROOT),
             ...LEGACY_PREFAB_ROOTS.flatMap((assetRoot) => scanLegacyPrefabFiles(assetRoot)),
-          ].sort((a, b) => a.relPath.localeCompare(b.relPath));
+          ].filter((item) => !isTemporaryUiEditorPrefabPath(item.relPath))
+            .sort((a, b) => a.relPath.localeCompare(b.relPath));
           const textures = scanCategoryTextures();
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ prefabs: files, textures }));
@@ -2982,8 +2995,7 @@ export function prefabServerPlugin(): Plugin {
         const relPath = url.searchParams.get('path') || '';
         const variant = url.searchParams.get('variant') || 'canvas';
         if (!relPath) { res.statusCode = 400; res.end(); return; }
-        const normalizedRel = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
-        if (normalizedRel.startsWith('Assets/Temp/UIEditorNew/') || normalizedRel.startsWith('Temp/UIEditorNew/') || normalizedRel.includes('/Assets/Temp/UIEditorNew/') || normalizedRel.includes('/Temp/UIEditorNew/')) {
+        if (isTemporaryUiEditorPrefabPath(relPath)) {
           res.statusCode = 403;
           res.end('temporary prefab thumbnails are not cacheable');
           return;

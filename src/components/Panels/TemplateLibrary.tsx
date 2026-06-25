@@ -12,6 +12,19 @@ interface PrefabEntry {
 
 interface TextureEntry { name: string; url: string }
 
+function isTemporaryUiEditorPrefabPath(value: string): boolean {
+  const normalized = value.replace(/\\/g, '/').replace(/^\/+/, '');
+  return normalized.startsWith('Assets/Temp/UIEditorNew/') ||
+    normalized.startsWith('Temp/UIEditorNew/') ||
+    normalized.includes('/Assets/Temp/UIEditorNew/') ||
+    normalized.includes('/Temp/UIEditorNew/');
+}
+
+function visiblePrefabEntries(data: any): PrefabEntry[] {
+  const list = (Array.isArray(data) ? data : data.prefabs || []) as PrefabEntry[];
+  return list.filter((item) => item?.relPath && !isTemporaryUiEditorPrefabPath(item.relPath));
+}
+
 export default function TemplateLibrary() {
   const [prefabs, setPrefabs] = useState<PrefabEntry[]>([]);
   const [textures, setTextures] = useState<Record<string, TextureEntry[]>>({});
@@ -37,7 +50,7 @@ export default function TemplateLibrary() {
     return fetch('/api/prefabs/list')
       .then((r) => r.json())
       .then((data) => {
-        setPrefabs(Array.isArray(data) ? data : data.prefabs || []);
+        setPrefabs(visiblePrefabEntries(data));
         if (data.textures) setTextures(data.textures);
       })
       .catch(() => setPrefabs([]));
@@ -53,7 +66,7 @@ export default function TemplateLibrary() {
     fetch('/api/prefabs/list')
       .then((r) => r.json())
       .then((data) => {
-        setPrefabs(Array.isArray(data) ? data : data.prefabs || []);
+        setPrefabs(visiblePrefabEntries(data));
         if (data.textures) setTextures(data.textures);
       })
       .catch(() => setPrefabs([]));
