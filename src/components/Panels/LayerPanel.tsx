@@ -431,6 +431,24 @@ const LayerItem = memo(function LayerItem({ nodeId, depth = 0, isArtboardRoot = 
         tabIndex={-1}
         onContextMenu={handleContextMenu}
       >
+        {/* 可见性 — 节点项最前面 */}
+        <button
+          className={`text-[11px] px-0.5 ${node.visible ? 'text-[#6c7086] hover:text-[#a6adc8]' : 'text-[#f38ba8]'}`}
+          onClick={(e) => { e.stopPropagation(); void setVisibleOnBridge(nodeId, !node.visible); }}
+          title={node.visible ? '隐藏' : '显示'}
+        >
+          {node.visible ? '◉' : '○'}
+        </button>
+
+        {/* 锁定 — 显隐之后 */}
+        <button
+          className={`text-[11px] px-0.5 ${node.locked ? 'text-[#f38ba8]' : 'text-[#6c7086] hover:text-[#a6adc8]'}`}
+          onClick={(e) => { e.stopPropagation(); updateNode(nodeId, { locked: !node.locked }); }}
+          title={node.locked ? '解锁' : '锁定'}
+        >
+          {node.locked ? '🔒' : '·'}
+        </button>
+
         {/* 折叠箭头 — component 类型不显示 */}
         <span
           className={`text-[11px] w-3 text-center cursor-pointer ${hasChildren && node.type !== 'component' ? 'text-[#6c7086]' : 'opacity-0'}`}
@@ -459,24 +477,6 @@ const LayerItem = memo(function LayerItem({ nodeId, depth = 0, isArtboardRoot = 
         ) : (
           <span className="whitespace-nowrap flex-1">{displayName}</span>
         )}
-
-        {/* 可见性 */}
-        <button
-          className={`text-[11px] px-0.5 ${node.visible ? 'text-[#6c7086] hover:text-[#a6adc8]' : 'text-[#f38ba8]'}`}
-          onClick={(e) => { e.stopPropagation(); void setVisibleOnBridge(nodeId, !node.visible); }}
-          title={node.visible ? '隐藏' : '显示'}
-        >
-          {node.visible ? '◉' : '○'}
-        </button>
-
-        {/* 锁定 */}
-        <button
-          className={`text-[11px] px-0.5 ${node.locked ? 'text-[#f38ba8]' : 'text-[#6c7086] hover:text-[#a6adc8]'}`}
-          onClick={(e) => { e.stopPropagation(); updateNode(nodeId, { locked: !node.locked }); }}
-          title={node.locked ? '解锁' : '锁定'}
-        >
-          {node.locked ? '🔒' : '·'}
-        </button>
       </div>
 
       {/* 子节点 — component 类型不展示内部子节点 */}
