@@ -37,6 +37,7 @@
 | Bridge 健康检查 | `http://127.0.0.1:18082/health` | 确认 Unity 侧服务可用。 |
 | 构建检查 | `npm run build` | TypeScript 和 Vite 构建验证。 |
 | 主流程烟测 | `npm run smoke:bridge-web` | 验证 Web 与 Bridge 闭环。 |
+| NGUI 样本 | `npm run smoke:ngui-snapshot` | 验证 NGUI prefab（默认 `DD_FP_HeroDisplay`）截图与 bbox。 |
 
 Unity 侧 Bridge 代码位于 Unity 工程：
 
@@ -101,6 +102,8 @@ Web 可以维护锁定、选中、展开折叠等交互状态；只要会改变 
 ### 当前可编辑控件与字段
 
 当前主流程面向 UGUI 常用视觉编辑，不面向程序接线编辑。
+
+> **NGUI 支持现状**：NGUI 的渲染隔离已完成（改 `UIDrawCall.cs` 让 drawcall 跟随隔离 scene，working root 常驻 session PreviewScene），`DD_FP_HeroDisplay` 等 NGUI prefab 可正常 open/render/close，主工程无污染。但**前端交互还有缺口**：属性面板没有 NGUI 字段分支、控件创建只建 UGUI、`Widget.depth`/`Widget.pivot`/`Text.overflow` 桥侧 Apply 未实现、拖动节流真值回填未做。详见 `docs/ngui-interaction-todo.md` 和 `docs/ngui-rewrite-plan.md`。
 
 已支持创建或插入：
 
@@ -508,9 +511,14 @@ npm run smoke:thumbnail-render
 ## 关键文档
 
 - `docs/README.md`：文档索引。
+- `docs/handover-deploy.md`：交接部署集成文档（工程定位、部署步骤、工程外改动、已知问题、接手检查清单）。
 - `docs/unity-editor-bridge-api.md`：Bridge API、数据结构、端点和 protected diff 约定。
 - `docs/component-library-io-contract.md`：UI 公共组件库与编辑器之间的输入输出契约。
 - `docs/client-bridge-isolation.md`：Bridge 命名空间、端口、session、临时目录和保存路径隔离约束。
+- `docs/baseline-smoke.md`：构建、启动、接口和 Unity 本地代理基线烟测。
 - `docs/editor-bridge-smoke.md`：Unity Editor Bridge 闭环烟测记录。
 - `docs/web-overlay-smoke.md`：Web 截图叠加层和属性面板烟测记录。
 - `docs/trial-samples.md`：试点 UI 样本、编辑结果和规则沉淀。
+- `docs/ngui-rewrite-plan.md`：NGUI 支持重写方案（根因、常驻隔离实例生命周期、实施步骤）。
+- `docs/ngui-isolation-change.md`：`UIDrawCall.cs` 源码改动记录（三重守卫、验证）。
+- `docs/ngui-interaction-todo.md`：NGUI 交互功能待办（属性面板 framework 分支、控件创建分支、拖动回填等）。
