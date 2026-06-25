@@ -303,14 +303,24 @@ public static partial class UIEditorNewBridgeCore
         if (root == null) return;
         Component[] components = root.GetComponentsInChildren<Component>(true);
 
-        // 1. 先 Start 所有 UIPanel（设 mStarted，使后续 widget CreatePanel 能 UIPanel.Find 到）。
+        // 1. 先启动 UIRoot，让它按 NGUI 屏幕高度把根节点缩放到相机 size=1 的坐标系。
+        //    Start 内部走 UpdateScale(false)，不会广播 UpdateAnchors，避免编辑态锚点被错误上下文重算。
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component component = components[i];
+            if (component == null || !IsTypeOrBaseName(component.GetType(), "UIRoot")) continue;
+            InvokeReflectedMethod(component, "Awake");
+            InvokeReflectedMethod(component, "Start");
+        }
+        List<NguiTransformSnapshot> transformSnapshots = CaptureNguiTransformSnapshots(root);
+        // 2. 再 Start 所有 UIPanel（设 mStarted，使后续 widget CreatePanel 能 UIPanel.Find 到）。
         for (int i = 0; i < components.Length; i++)
         {
             Component component = components[i];
             if (component != null && IsTypeOrBaseName(component.GetType(), "UIPanel"))
                 InvokeReflectedMethod(component, "Start");
         }
-        // 2. Start 所有 UIWidget 并显式 CreatePanel，建立 widget→panel 关联。
+        // 3. Start 所有 UIWidget 并显式 CreatePanel，建立 widget→panel 关联。
         //    离屏 LoadPrefabContents root 的 widget 不会被 Unity 自动 Start，panel 始终为 null、不填几何。
         for (int i = 0; i < components.Length; i++)
         {
@@ -319,16 +329,8 @@ public static partial class UIEditorNewBridgeCore
             InvokeReflectedMethod(component, "Start");
             InvokeReflectedMethod(component, "CreatePanel");
         }
-        // 3. 只驱动显式 UIAnchor。不要对所有 UIRect/UIPanel 强制 Reset/UpdateAnchors：
-        // 离屏相机若未被 NGUI 识别，UIRect.Update 会把已序列化好的锚点布局按错误上下文重算。
-        for (int i = 0; i < components.Length; i++)
-        {
-            Component component = components[i];
-            if (component == null) continue;
-            Type type = component.GetType();
-            if (IsTypeOrBaseName(type, "UIAnchor"))
-                InvokeReflectedMethod(component, "UpdateAnchors");
-        }
+        // 4. 不在截图 prime 中主动刷新 UIAnchor。Prefab 已保存正确的 NGUI 锚点结果；
+        // 离屏相机上下文会让部分锚点链被重新计算到错误位置。
         for (int i = 0; i < components.Length; i++)
         {
             Component component = components[i];
@@ -337,20 +339,161 @@ public static partial class UIEditorNewBridgeCore
             if (IsTypeOrBaseName(type, "UITable") || IsTypeOrBaseName(type, "UIGrid"))
                 InvokeReflectedMethod(component, "Reposition");
         }
-        // 4. 标记 widget 几何变更。
+        RestoreNguiTransformSnapshots(transformSnapshots);
+        // 5. 标记 widget 几何变更。
         for (int i = 0; i < components.Length; i++)
         {
             Component component = components[i];
             if (component != null && IsTypeOrBaseName(component.GetType(), "UIWidget"))
                 InvokeReflectedMethod(component, "MarkAsChanged");
         }
-        // 5. 驱动 panel 填充 widget 几何并建 drawcall（UpdateSelf 绕过 LateUpdate 帧守卫）。
+        // 6. 驱动 panel 填充 widget 几何并建 drawcall（UpdateSelf 绕过 LateUpdate 帧守卫）。
         for (int i = 0; i < components.Length; i++)
         {
             Component component = components[i];
             if (component != null && IsTypeOrBaseName(component.GetType(), "UIPanel"))
                 InvokeReflectedMethod(component, "UpdateSelf");
         }
+        // 7. NGUI 正常 LateUpdate 还会调用 UIPanel.UpdateDrawCalls(sortOrder)，把 panel 的
+        //    position/rotation/lossyScale 写入 UIDrawCall transform。离屏手动 prime 若少这步，
+        //    mesh 已生成但 drawcall 仍是 scale=1，会被 size=1 的 NGUI 相机放大成整屏局部背景。
+        UpdateNguiPanelDrawCalls(components);
+    }
+
+    private struct NguiTransformSnapshot
+    {
+        public Transform transform;
+        public Vector3 localPosition;
+        public Quaternion localRotation;
+        public Vector3 localScale;
+        public Component widget;
+        public int widgetWidth;
+        public int widgetHeight;
+    }
+
+    private static List<NguiTransformSnapshot> CaptureNguiTransformSnapshots(GameObject root)
+    {
+        List<NguiTransformSnapshot> snapshots = new List<NguiTransformSnapshot>();
+        if (root == null) return snapshots;
+
+        Transform[] transforms = root.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < transforms.Length; i++)
+        {
+            Transform transform = transforms[i];
+            if (transform == null) continue;
+            Component widget = GetNguiWidgetComponent(transform.gameObject);
+            bool preserveWidgetSize = ShouldPreserveNguiWidgetSize(widget);
+            snapshots.Add(new NguiTransformSnapshot
+            {
+                transform = transform,
+                localPosition = transform.localPosition,
+                localRotation = transform.localRotation,
+                localScale = transform.localScale,
+                widget = preserveWidgetSize ? widget : null,
+                widgetWidth = preserveWidgetSize ? ReadReflectedInt(widget, "width", 0) : 0,
+                widgetHeight = preserveWidgetSize ? ReadReflectedInt(widget, "height", 0) : 0
+            });
+        }
+        return snapshots;
+    }
+
+    private static bool ShouldPreserveNguiWidgetSize(Component widget)
+    {
+        if (widget == null) return false;
+        object updateAnchors = ReadReflectedProperty(widget, "updateAnchors");
+        if (updateAnchors is bool) return !(bool)updateAnchors;
+        if (updateAnchors != null)
+        {
+            try { return Convert.ToInt32(updateAnchors, CultureInfo.InvariantCulture) == 0; }
+            catch {}
+        }
+        return false;
+    }
+
+    private static void RestoreNguiTransformSnapshots(List<NguiTransformSnapshot> snapshots)
+    {
+        if (snapshots == null) return;
+        for (int i = 0; i < snapshots.Count; i++)
+        {
+            Transform transform = snapshots[i].transform;
+            if (transform == null) continue;
+            transform.localPosition = snapshots[i].localPosition;
+            transform.localRotation = snapshots[i].localRotation;
+            transform.localScale = snapshots[i].localScale;
+            Component widget = snapshots[i].widget;
+            if (widget == null) continue;
+            SetReflectedProperty(widget, "width", snapshots[i].widgetWidth);
+            SetReflectedProperty(widget, "height", snapshots[i].widgetHeight);
+        }
+    }
+
+    private static void UpdateNguiPanelDrawCalls(Component[] components)
+    {
+        if (components == null) return;
+
+        int nextRenderQueue = 3000;
+        int sortOrder = 0;
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component panel = components[i];
+            if (panel == null || !IsTypeOrBaseName(panel.GetType(), "UIPanel")) continue;
+
+            object renderQueue = ReadReflectedProperty(panel, "renderQueue");
+            string renderQueueName = renderQueue != null ? renderQueue.ToString() : "";
+            if (renderQueueName == "Automatic")
+            {
+                SetReflectedProperty(panel, "startingRenderQueue", nextRenderQueue);
+                InvokeReflectedMethod(panel, "UpdateDrawCalls", new object[] { sortOrder });
+                nextRenderQueue += GetNguiPanelDrawCallCount(panel);
+            }
+            else if (renderQueueName == "StartAt")
+            {
+                int start = Mathf.Min(ReadReflectedInt(panel, "startingRenderQueue", nextRenderQueue), 4500);
+                SetReflectedProperty(panel, "startingRenderQueue", start);
+                InvokeReflectedMethod(panel, "UpdateDrawCalls", new object[] { sortOrder });
+                if (GetNguiPanelDrawCallCount(panel) != 0)
+                    nextRenderQueue = Mathf.Max(nextRenderQueue, start + GetNguiPanelDrawCallCount(panel));
+            }
+            else
+            {
+                InvokeReflectedMethod(panel, "UpdateDrawCalls", new object[] { sortOrder });
+                if (GetNguiPanelDrawCallCount(panel) != 0)
+                    nextRenderQueue = Mathf.Max(nextRenderQueue, ReadReflectedInt(panel, "startingRenderQueue", nextRenderQueue) + 1);
+            }
+            sortOrder++;
+        }
+    }
+
+    private static int GetNguiPanelDrawCallCount(Component panel)
+    {
+        System.Collections.ICollection drawCalls = ReadReflectedProperty(panel, "drawCalls") as System.Collections.ICollection;
+        return drawCalls != null ? drawCalls.Count : 0;
+    }
+
+    private static bool InvokeReflectedMethod(object target, string methodName, object[] args)
+    {
+        if (target == null || string.IsNullOrEmpty(methodName)) return false;
+        int argCount = args != null ? args.Length : 0;
+        for (Type type = target.GetType(); type != null; type = type.BaseType)
+        {
+            MethodInfo[] methods = type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+            for (int i = 0; i < methods.Length; i++)
+            {
+                MethodInfo method = methods[i];
+                if (method.Name != methodName) continue;
+                if (method.GetParameters().Length != argCount) continue;
+                try
+                {
+                    method.Invoke(target, args);
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 
     // 在 session 的 previewScene 内建一台常驻离屏相机；参数取自 prefab 自带相机（= Game View 相机口径），
