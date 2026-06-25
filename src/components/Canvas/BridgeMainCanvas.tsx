@@ -7,6 +7,7 @@ import {
   ensureActiveBridgeArtboard,
   createWidgetNodeOnBridge,
   insertPrefabIntoArtboard,
+  isEmptyLocalArtboard,
   isApplyingBridgeState,
   moveNodeOnBridge,
   refreshActiveBridgeSnapshot,
@@ -311,6 +312,7 @@ export default function BridgeMainCanvas() {
   const activeArtboard = page?.artboards.find((item) => item.id === state.activeArtboardId) ?? null;
   const snapshot = activeArtboard?.bridgeSnapshot ?? null;
   const snapshotUrl = activeArtboard?.bridgeSnapshotUrl ?? null;
+  const emptyLocalArtboard = isEmptyLocalArtboard(activeArtboard);
   const selectedId = state.selectedIds[0] ?? null;
   const snapshotViewport = useMemo(() => {
     const viewport = snapshot?.viewport;
@@ -1264,7 +1266,7 @@ export default function BridgeMainCanvas() {
           style={{ left: screenX, top: screenY, width: screenW, height: screenH }}
         >
           <div className="flex h-full w-full items-center justify-center text-sm text-[#a6adc8]">
-            {loading ? '正在读取 Unity 临时 Prefab...' : '等待 Unity Bridge 截图'}
+            {loading ? '正在读取 Unity 临时 Prefab...' : (emptyLocalArtboard ? '空画板' : '等待 Unity Bridge 截图')}
           </div>
         </div>
       )}

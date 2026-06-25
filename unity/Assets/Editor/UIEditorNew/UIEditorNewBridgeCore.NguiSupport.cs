@@ -806,6 +806,42 @@ public static partial class UIEditorNewBridgeCore
         return null;
     }
 
+    private static void RemoveNguiPanelsForRootFromList(GameObject root)
+    {
+        if (root == null) return;
+
+        Type panelType = FindLoadedType("UIPanel");
+        if (panelType == null) return;
+        FieldInfo listField = panelType.GetField("list", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+        if (listField == null) return;
+
+        System.Collections.IList list;
+        try { list = listField.GetValue(null) as System.Collections.IList; }
+        catch { return; }
+        if (list == null || list.Count == 0) return;
+
+        Component[] components;
+        try { components = root.GetComponentsInChildren<Component>(true); }
+        catch { return; }
+        if (components == null || components.Length == 0) return;
+
+        HashSet<Component> rootPanels = new HashSet<Component>();
+        for (int i = 0; i < components.Length; i++)
+        {
+            Component component = components[i];
+            if (component != null && IsTypeOrBaseName(component.GetType(), "UIPanel"))
+                rootPanels.Add(component);
+        }
+        if (rootPanels.Count == 0) return;
+
+        for (int i = list.Count - 1; i >= 0; i--)
+        {
+            Component panel = list[i] as Component;
+            if (panel != null && rootPanels.Contains(panel))
+                list.RemoveAt(i);
+        }
+    }
+
     private static ComponentSummary BuildNguiWidgetSummary(Component component)
     {
         Vector2 pivot = ReadReflectedVector2(component, "pivotOffset", new Vector2(0.5f, 0.5f));

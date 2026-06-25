@@ -1548,8 +1548,7 @@ public static partial class UIEditorNewBridgeCore
         session.workingRootLoadedFromPrefabContents = false;
         try
         {
-            // 常驻实例方案：root 在 session PreviewScene 内、NGUI 组件常开。销毁 root 时 UIPanel.OnDisable
-            // 自动销毁其 drawcall；无需再做 suspend/静态表清理。
+            RemoveNguiPanelsForRootFromList(root);
             if (loadedFromPrefabContents)
                 PrefabUtility.UnloadPrefabContents(root);
             else
