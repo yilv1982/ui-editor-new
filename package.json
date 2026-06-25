@@ -16,6 +16,7 @@
     "smoke:bridge-web": "node scripts/editor-bridge-web-smoke.mjs",
     "smoke:bridge-shell": "node scripts/bridge-shell-context-smoke.mjs",
     "smoke:bridge-ops": "node scripts/bridge-ops-smoke.mjs",
+    "smoke:ngui-snapshot": "node scripts/ngui-snapshot-smoke.mjs",
     "diagnose:drag-drop": "node scripts/drag-drop-diagnostic.mjs",
     "smoke:thumbnail-cache": "node scripts/thumbnail-cache-smoke.mjs",
     "smoke:thumbnail-render": "node scripts/thumbnail-render-smoke.mjs"

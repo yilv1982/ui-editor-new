@@ -161,6 +161,8 @@ const enabled = typeof window !== 'undefined' && (import.meta.env.DEV || DEBUG_H
 const clientId = getClientId();
 let polling = false;
 let reportTimer: number | null = null;
+let lifecycleSeq = 0;
+const LAST_PAGE_EXIT_KEY = 'uieditor-debug-last-page-exit';
 
 function getClientId(): string {
   if (typeof window === 'undefined') return 'server';
@@ -1802,6 +1804,156 @@ function postJson(path: string, body: unknown): Promise<void> {
   }).then(() => undefined);
 }
 
+function debugLog(channel: string, event: string, payload: Record<string, unknown> = {}, useBeacon = false) {
+  if (!enabled) return;
+  const body = {
+    channel,
+    event,
+    payload: {
+      ...payload,
+      lifecycleSeq: ++lifecycleSeq,
+      location: window.location.href,
+      visibilityState: document.visibilityState,
+      hidden: document.hidden,
+      navigation: navigationSummary(),
+    },
+    clientId,
+    at: new Date().toISOString(),
+    perfMs: Math.round(performance.now()),
+  };
+  if (useBeacon && navigator.sendBeacon) {
+    try {
+      const blob = new Blob([JSON.stringify(body)], { type: 'application/json' });
+      if (navigator.sendBeacon('/api/uieditor-debug/log', blob)) return;
+    } catch {
+      // Fall through to fetch below.
+    }
+  }
+  void postJson('/api/uieditor-debug/log', body).catch(() => {
+    // Debug server is optional.
+  });
+}
+
+function rememberPageExit(event: string, payload: Record<string, unknown> = {}) {
+  try {
+    window.sessionStorage.setItem(LAST_PAGE_EXIT_KEY, JSON.stringify({
+      event,
+      payload,
+      at: new Date().toISOString(),
+      perfMs: Math.round(performance.now()),
+      navigation: navigationSummary(),
+      location: window.location.href,
+    }));
+  } catch {
+    // sessionStorage is best-effort diagnostics.
+  }
+}
+
+function consumeLastPageExit(): unknown {
+  try {
+    const value = window.sessionStorage.getItem(LAST_PAGE_EXIT_KEY);
+    if (!value) return null;
+    window.sessionStorage.removeItem(LAST_PAGE_EXIT_KEY);
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function navigationSummary(): Record<string, unknown> {
+  const entry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+  return {
+    type: entry?.type ?? 'unknown',
+    startTime: entry?.startTime ?? 0,
+    domInteractive: entry?.domInteractive ?? null,
+    loadEventEnd: entry?.loadEventEnd ?? null,
+    referrer: document.referrer || null,
+  };
+}
+
+function currentRuntimeSummary(): Record<string, unknown> {
+  const state = useEditorStore.getState();
+  return {
+    activePageId: state.activePageId,
+    activeArtboardId: state.activeArtboardId,
+    selectedIds: state.selectedIds,
+    rootCount: state.rootIds.length,
+    nodeCount: Object.keys(state.nodes).length,
+    canvas: {
+      x: state.canvasX,
+      y: state.canvasY,
+      scale: state.canvasScale,
+    },
+  };
+}
+
+function installReloadDiagnostics() {
+  debugLog('page-lifecycle', 'boot', {
+    ...currentRuntimeSummary(),
+    hmrEnabled: !!import.meta.hot,
+    previousExit: consumeLastPageExit(),
+  });
+
+  window.addEventListener('beforeunload', () => {
+    const summary = currentRuntimeSummary();
+    rememberPageExit('beforeunload', summary);
+    debugLog('page-lifecycle', 'beforeunload', summary, true);
+  });
+  window.addEventListener('pagehide', (event) => {
+    const summary = {
+      ...currentRuntimeSummary(),
+      persisted: event.persisted,
+    };
+    rememberPageExit('pagehide', summary);
+    debugLog('page-lifecycle', 'pagehide', summary, true);
+  });
+  document.addEventListener('visibilitychange', () => {
+    debugLog('page-lifecycle', 'visibilitychange', currentRuntimeSummary(), document.hidden);
+  });
+  window.addEventListener('error', (event) => {
+    debugLog('page-error', 'error', {
+      message: event.message,
+      filename: event.filename,
+      lineno: event.lineno,
+      colno: event.colno,
+      errorName: event.error instanceof Error ? event.error.name : null,
+      errorMessage: event.error instanceof Error ? event.error.message : null,
+      stack: event.error instanceof Error ? event.error.stack : null,
+    });
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    debugLog('page-error', 'unhandledrejection', {
+      reasonName: reason instanceof Error ? reason.name : null,
+      reasonMessage: reason instanceof Error ? reason.message : String(reason),
+      stack: reason instanceof Error ? reason.stack : null,
+    });
+  });
+
+  if (import.meta.hot) {
+    import.meta.hot.on('vite:beforeFullReload', (payload) => {
+      rememberPageExit('vite:beforeFullReload', { payload });
+      debugLog('vite-hmr', 'beforeFullReload', { payload }, true);
+    });
+    import.meta.hot.on('vite:beforeUpdate', (payload) => {
+      debugLog('vite-hmr', 'beforeUpdate', { payload });
+    });
+    import.meta.hot.on('vite:afterUpdate', (payload) => {
+      debugLog('vite-hmr', 'afterUpdate', { payload });
+    });
+    import.meta.hot.on('vite:error', (payload) => {
+      debugLog('vite-hmr', 'error', { payload });
+    });
+    import.meta.hot.on('vite:ws:disconnect', (payload) => {
+      rememberPageExit('vite:ws:disconnect', { payload });
+      debugLog('vite-hmr', 'ws-disconnect', { payload }, true);
+    });
+    import.meta.hot.on('vite:ws:connect', (payload) => {
+      debugLog('vite-hmr', 'ws-connect', { payload });
+    });
+  }
+}
+
 function scheduleReport(kind = 'store-change') {
   if (!enabled) return;
   if (reportTimer !== null) window.clearTimeout(reportTimer);
@@ -1975,6 +2127,8 @@ async function pollCommands() {
 }
 
 if (enabled) {
+  installReloadDiagnostics();
+
   window.__UIEDITOR_DEBUG__ = {
     snapshot: getSnapshot,
     tree: buildLayerTree,
