@@ -247,11 +247,15 @@ public static partial class UIEditorNewBridgeCore
 
     private static void CollectNguiWorldCorners(Transform target, Transform current, List<Vector3> corners)
     {
+        if (current == null || !current.gameObject.activeInHierarchy) return;
+
         Component[] components = current.GetComponents<Component>();
         for (int i = 0; i < components.Length; i++)
         {
             Component component = components[i];
             if (component == null) continue;
+            Behaviour behaviour = component as Behaviour;
+            if (behaviour != null && !behaviour.enabled) continue;
             Type type = component.GetType();
             if (!IsTypeOrBaseName(type, "UIRect") && !IsTypeOrBaseName(type, "UIWidget") && !IsTypeOrBaseName(type, "UIPanel")) continue;
             Vector3[] values;
